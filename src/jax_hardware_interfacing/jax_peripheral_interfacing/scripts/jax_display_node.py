@@ -96,7 +96,7 @@ class JaxDisplayNode(Node):
         self.declare_parameter("battery_voltage_empty", 13.6)
         self.declare_parameter("low_battery_threshold", 14.0)
         self.declare_parameter("refresh_hz", 10.0)
-        self.declare_parameter("robot_name", "APEX-1")
+        self.declare_parameter("robot_name", "JAX 1.0")
         self.declare_parameter("boot_duration", 2.5)
         self.declare_parameter("mode_flash_duration", 1.2)
         self.declare_parameter("use_lcd", False)
