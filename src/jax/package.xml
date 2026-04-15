@@ -14,18 +14,15 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>joy</exec_depend>
   <exec_depend>jax_control</exec_depend>
   <exec_depend>jax_msgs</exec_depend>
-  <exec_depend>jax_input_interfacing</exec_depend>
   <exec_depend>jax_servo_interfacing</exec_depend>
   <exec_depend>jax_peripheral_interfacing</exec_depend>
   <exec_depend>jax_utilities</exec_depend>
   <exec_depend>jax_behaviors</exec_depend>
   <exec_depend>jax_gazebo</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  <!-- Optional: ros2 launch jax twist_keyboard_test.launch.py -->
-  <exec_depend>teleop_twist_keyboard</exec_depend>
+  <exec_depend>python3-pynput</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

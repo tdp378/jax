@@ -94,9 +94,18 @@ def generate_launch_description():
         executable='parameter_bridge',
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+        ],
+        output='screen',
+    )
+
+    imu_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
             '/jax/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
         ],
         output='screen',
+        condition=IfCondition(use_imu),
     )
 
     # -----------------------------
@@ -434,6 +443,7 @@ def generate_launch_description():
         gz_sim,
         robot_state_publisher,
         bridge,
+        imu_bridge,
         rosbridge,
         rosapi,
         mock_peripherals,

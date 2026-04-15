@@ -8,7 +8,7 @@ ament_python_install_package(${PROJECT_NAME} PACKAGE_DIR src/jax)
 
 install(PROGRAMS
   scripts/jax_driver.py
-  scripts/cmd_vel_to_joy_bridge.py
+  scripts/keyboard_cmd_mode.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

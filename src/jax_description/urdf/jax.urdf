@@ -198,11 +198,10 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.004 0.004 0.0"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://jax_description/meshes/link4_collision.STL" />
+        <sphere radius="0.009" />
       </geometry>
     </collision>
   </link>
@@ -334,11 +333,10 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.004 0.004 0.0"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://jax_description/meshes/link4_collision.STL" />
+        <sphere radius="0.009" />
       </geometry>
     </collision>
   </link>
@@ -470,11 +468,10 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.004 0.004 0.0"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://jax_description/meshes/link4_collision.STL" />
+        <sphere radius="0.009" />
       </geometry>
     </collision>
   </link>
@@ -606,11 +603,10 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.004 0.004 0.0"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://jax_description/meshes/link4_collision.STL" />
+        <sphere radius="0.009" />
       </geometry>
     </collision>
   </link>
@@ -1172,7 +1168,7 @@
   <gazebo reference="FR_link4">
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
-    <minDepth>0.0002</minDepth>
+    <minDepth>0.001</minDepth>
     <kp  value="1000000.0"/>
     <kd  value="100.0"/>
   </gazebo>
@@ -1181,7 +1177,7 @@
   <gazebo reference="FL_link4">
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
-    <minDepth>0.0002</minDepth>
+    <minDepth>0.001</minDepth>
     <kp  value="1000000.0"/>
     <kd  value="100.0"/>
   </gazebo>
@@ -1190,7 +1186,7 @@
   <gazebo reference="RR_link4">
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
-    <minDepth>0.0002</minDepth>
+    <minDepth>0.001</minDepth>
     <kp  value="1000000.0"/>
     <kd  value="100.0"/>
   </gazebo>
@@ -1199,7 +1195,7 @@
   <gazebo reference="RL_link4">
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
-    <minDepth>0.0002</minDepth>
+    <minDepth>0.001</minDepth>
     <kp  value="1000000.0"/>
     <kd  value="100.0"/>
   </gazebo>

@@ -22,6 +22,26 @@ class Configuration:
         self.max_stance_yaw = 1.2
         self.max_stance_yaw_rate = 1
 
+        #################### IMU STABILIZATION ####################
+        # Body attitude controller gains (radians-based).
+        # Start conservative in sim, then increase KP until body follows terrain
+        # without oscillation; add KD to damp; add small KI last.
+        self.stabilize_roll_kp = 0.12
+        self.stabilize_roll_ki = 0.0
+        self.stabilize_roll_kd = 0.0
+        self.stabilize_pitch_kp = 0.22
+        self.stabilize_pitch_ki = 0.0
+        self.stabilize_pitch_kd = 0.0
+
+        # Clamp measured tilt used by controller (rad).
+        self.stabilize_max_tilt = 0.3
+        # Ignore small orientation noise to prevent chatter.
+        self.stabilize_deadband = 0.04
+        # Integral anti-windup clamp (rad*s).
+        self.stabilize_integral_limit = 0.1
+        # Clamp commanded corrective body rotation (rad).
+        self.stabilize_compensation_limit = 0.12
+
         #################### STANCE ####################
         self.delta_x = 0.117
 

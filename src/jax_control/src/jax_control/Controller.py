@@ -28,6 +28,21 @@ class Controller:
         self.gait_controller = GaitController(self.config)
         self.swing_controller = SwingController(self.config)
         self.stance_controller = StanceController(self.config)
+        # Attitude stabilization controller (uses IMU estimate, but is separate from sensing)
+        self.stabilize_roll_kp = getattr(self.config, 'stabilize_roll_kp', 0.35)
+        self.stabilize_roll_ki = getattr(self.config, 'stabilize_roll_ki', 0.03)
+        self.stabilize_roll_kd = getattr(self.config, 'stabilize_roll_kd', 0.02)
+        self.stabilize_pitch_kp = getattr(self.config, 'stabilize_pitch_kp', 0.75)
+        self.stabilize_pitch_ki = getattr(self.config, 'stabilize_pitch_ki', 0.05)
+        self.stabilize_pitch_kd = getattr(self.config, 'stabilize_pitch_kd', 0.03)
+        self.stabilize_max_tilt = getattr(self.config, 'stabilize_max_tilt', 0.4)
+        self.stabilize_deadband = getattr(self.config, 'stabilize_deadband', 0.04)
+        self.stabilize_integral_limit = getattr(self.config, 'stabilize_integral_limit', 0.2)
+        self.stabilize_compensation_limit = getattr(self.config, 'stabilize_compensation_limit', 0.5)
+        self._roll_error_integral = 0.0
+        self._pitch_error_integral = 0.0
+        self._prev_roll_error = 0.0
+        self._prev_pitch_error = 0.0
 
         self.hop_transition_mapping = {BehaviorState.REST: BehaviorState.HOP, BehaviorState.HOP: BehaviorState.FINISHHOP, BehaviorState.FINISHHOP: BehaviorState.REST, BehaviorState.TROT: BehaviorState.HOP}
         self.trot_transition_mapping = {BehaviorState.REST: BehaviorState.TROT, BehaviorState.TROT: BehaviorState.REST, BehaviorState.HOP: BehaviorState.TROT, BehaviorState.FINISHHOP: BehaviorState.TROT}
@@ -89,6 +104,57 @@ class Controller:
         state.rotated_foot_locations = rotated_foot_locations
         state.joint_angles = self.inverse_kinematics(rotated_foot_locations, self.config)
 
+    def _imu_attitude_compensation(self, orientation):
+        _, pitch, roll = orientation
+        dt = max(self.config.dt, 1e-4)
+
+        # We target level body orientation during locomotion/rest.
+        roll_error = -np.clip(roll, -self.stabilize_max_tilt, self.stabilize_max_tilt)
+        pitch_error = np.clip(pitch, -self.stabilize_max_tilt, self.stabilize_max_tilt)
+        if abs(roll_error) < self.stabilize_deadband:
+            roll_error = 0.0
+        if abs(pitch_error) < self.stabilize_deadband:
+            pitch_error = 0.0
+
+        self._roll_error_integral = np.clip(
+            self._roll_error_integral + roll_error * dt,
+            -self.stabilize_integral_limit,
+            self.stabilize_integral_limit,
+        )
+        self._pitch_error_integral = np.clip(
+            self._pitch_error_integral + pitch_error * dt,
+            -self.stabilize_integral_limit,
+            self.stabilize_integral_limit,
+        )
+
+        roll_error_derivative = (roll_error - self._prev_roll_error) / dt
+        pitch_error_derivative = (pitch_error - self._prev_pitch_error) / dt
+        self._prev_roll_error = roll_error
+        self._prev_pitch_error = pitch_error
+
+        roll_compensation = (
+            self.stabilize_roll_kp * roll_error
+            + self.stabilize_roll_ki * self._roll_error_integral
+            + self.stabilize_roll_kd * roll_error_derivative
+        )
+        pitch_compensation = (
+            self.stabilize_pitch_kp * pitch_error
+            + self.stabilize_pitch_ki * self._pitch_error_integral
+            + self.stabilize_pitch_kd * pitch_error_derivative
+        )
+
+        roll_compensation = np.clip(
+            roll_compensation,
+            -self.stabilize_compensation_limit,
+            self.stabilize_compensation_limit,
+        )
+        pitch_compensation = np.clip(
+            pitch_compensation,
+            -self.stabilize_compensation_limit,
+            self.stabilize_compensation_limit,
+        )
+        return roll_compensation, pitch_compensation
+
     def run(self, state, command):
         previous_state = state.behavior_state
 
@@ -101,15 +167,16 @@ class Controller:
 
         if previous_state != state.behavior_state:
             self._node.get_logger().info(f'State changed from {previous_state!s} to {state.behavior_state!s}')
+            # Avoid integrator carry-over when changing behavior modes.
+            self._roll_error_integral = 0.0
+            self._pitch_error_integral = 0.0
+            self._prev_roll_error = 0.0
+            self._prev_pitch_error = 0.0
 
         if state.behavior_state == BehaviorState.TROT:
             state.foot_locations, contact_modes = self.step_gait(state, command)
             rotated_foot_locations = euler2mat(command.roll, command.pitch, 0.0) @ state.foot_locations
-            yaw, pitch, roll = state.euler_orientation
-            correction_factor = 0.8
-            max_tilt = 0.4
-            roll_compensation = correction_factor * np.clip(roll, -max_tilt, max_tilt)
-            pitch_compensation = correction_factor * np.clip(pitch, -max_tilt, max_tilt)
+            roll_compensation, pitch_compensation = self._imu_attitude_compensation(state.euler_orientation)
             rmat = euler2mat(roll_compensation, pitch_compensation, 0)
             rotated_foot_locations = rmat.T @ rotated_foot_locations
             state.joint_angles = self.inverse_kinematics(rotated_foot_locations, self.config)
@@ -148,11 +215,7 @@ class Controller:
         return state.joint_angles
 
     def stabilise_with_IMU(self, foot_locations, orientation):
-        yaw, pitch, roll = orientation
-        correction_factor = 0.5
-        max_tilt = 0.4
-        roll_compensation = correction_factor * np.clip(-roll, -max_tilt, max_tilt)
-        pitch_compensation = correction_factor * np.clip(-pitch, -max_tilt, max_tilt)
+        roll_compensation, pitch_compensation = self._imu_attitude_compensation(orientation)
         rmat = euler2mat(roll_compensation, pitch_compensation, 0)
         rotated_foot_locations = rmat.T @ foot_locations
         return rotated_foot_locations
