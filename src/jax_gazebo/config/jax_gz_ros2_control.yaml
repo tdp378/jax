@@ -1,0 +1,24 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    leg_joint_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+leg_joint_position_controller:
+  ros__parameters:
+    joints:
+      - FR_theta1
+      - FR_theta2
+      - FR_theta3
+      - FL_theta1
+      - FL_theta2
+      - FL_theta3
+      - RR_theta1
+      - RR_theta2
+      - RR_theta3
+      - RL_theta1
+      - RL_theta2
+      - RL_theta3
+    interface_name: position

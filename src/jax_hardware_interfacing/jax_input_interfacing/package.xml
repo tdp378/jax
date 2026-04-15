@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jax_input_interfacing</name>
+  <version>0.0.0</version>
+  <description>Joystick / keyboard input for Jax</description>
+  <maintainer email="alex@todo.todo">alex</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>jax_control</depend>
+  <depend>jax_msgs</depend>
+  <depend>jax_utilities</depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pynput</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
