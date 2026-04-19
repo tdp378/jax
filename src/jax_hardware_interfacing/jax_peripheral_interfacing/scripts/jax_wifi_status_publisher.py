@@ -25,9 +25,12 @@ class WifiStatusPublisher(Node):
 
     def timer_callback(self):
         ssid, bars = self.get_wifi_status()
-
         msg = String()
+        # Defensive: always send a valid string
+        if not ssid or not isinstance(bars, int):
+            ssid, bars = "NO WIFI", 0
         msg.data = f"{ssid}|{bars}"
+        self.get_logger().info(f"Publishing WiFi status: {msg.data}")
         self.publisher_.publish(msg)
 
     def get_wifi_status(self):

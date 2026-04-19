@@ -206,6 +206,8 @@ class JaxModeManager(Node):
     def get_best_current_pose(self):
         if self.latest_joint_positions is not None:
             return list(self.latest_joint_positions)
+        if self.current_mode in self.static_modes and self.current_pose is not None:
+            return list(self.current_pose)
         if self.latest_walk_command is not None:
             return list(self.latest_walk_command)
         if self.current_pose is not None:

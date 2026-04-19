@@ -1,0 +1,72 @@
+/**:
+  ros__parameters:
+    # Final per-servo hardware calibration after IK.
+    # Order: [FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
+    #         RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf]
+    # servo_direction should be 1 or -1 per joint.
+    servo_direction: [1, -1, -1, 1, -1, -1, -1, -1, -1, -1, -1, -1]
+
+    # Reorder logical joints into physical Arduino channel order if needed.
+    servo_order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+    # Final degree trim applied after direction and +90 conversion.
+    # Use this for horn zero/calibration issues like foot pad not sitting flat.
+    servo_offset_deg: [4.0, 0.0, -45.0, 4.0, 0.0, -45.0, -4.0, 0.0, -45.0, 5.0, 5.0, -45.0]
+
+    # Global neutral stance used by IK-driven modes like rest and trot.
+    # delta_x: front/back spread from body centerline.
+    # Bigger value = front feet farther forward and rear feet farther back.
+    default_stance_delta_x: 0.117
+
+    # delta_y: left/right spread from body centerline.
+    # Bigger value = wider stance.
+    default_stance_delta_y: 0.1106
+
+    # Extra fore/aft shift applied only to the front or rear pair.
+    # Positive = farther forward. Negative = farther backward.
+    front_leg_x_shift: 0.0
+    rear_leg_x_shift: 0.0
+
+    # Global nominal body height used by the default stance.
+    # More negative = body lower. Less negative = body higher.
+    default_z_ref: -0.25
+
+    sit_x_offsets: [-0.03, -0.03, 0.09, 0.09]
+    sit_y_offsets: [0.0, 0.0, 0.0, 0.0]
+    sit_z_offsets: [-0.18, -0.18, -0.18, -0.18]
+
+    lay_x_offsets: [-0.015, -0.015, 0.035, 0.035]
+    lay_y_offsets: [0.0, 0.0, 0.0, 0.0]
+    lay_z_offsets: [-0.24, -0.24, -0.24, -0.24]
+
+    # Rest tuning order is: [front_right, front_left, rear_right, rear_left]
+    # x offsets move feet fore/aft in body space.
+    # More positive = foot farther forward. More negative = foot farther back.
+    rest_x_offsets: [-0.010774, -0.010774, 0.0, 0.0]
+
+    # y offsets move feet sideways in body space.
+    # Positive pushes left legs farther left and right legs toward center.
+    # Negative pushes right legs farther right and left legs toward center.
+    rest_y_offsets: [0.0, 0.0, 0.0, 0.0]
+
+    # Rest body height in meters.
+    # More negative = body lower. Less negative = body higher.
+    rest_height_center: -0.17531
+    rest_height_min: -0.23531
+    rest_height_max: -0.11531
+
+    # Max body tilt allowed while in rest mode, in radians.
+    rest_max_roll: 0.20
+    rest_max_pitch: 0.20
+
+    # Battery telemetry tuning.
+    # The Arduino only replies to BAT? requests, so the Pi polls it at this rate.
+    battery_query_period_s: 0.10
+
+    # Final battery calibration: published_voltage = raw_voltage * scale + offset
+    battery_voltage_scale: 0.78
+    battery_voltage_offset: -1.0
+
+    # LCD battery smoothing. Smaller window = faster update.
+    battery_filter_window: 6
+    battery_jump_threshold: 0.75

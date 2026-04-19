@@ -14,6 +14,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>jax_control</exec_depend>
   <exec_depend>jax_msgs</exec_depend>
   <exec_depend>jax_servo_interfacing</exec_depend>
@@ -23,6 +24,7 @@
   <exec_depend>jax_gazebo</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-pynput</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -43,6 +43,13 @@ def main():
     GPIO.setup(battery_pin3_number, GPIO.IN)
 
     battery_percentage_publisher = node.create_publisher(Float64, '/battery_percentage', 10)
+    # Add BatteryState publisher for LCD
+    try:
+        from sensor_msgs.msg import BatteryState
+    except ImportError:
+        print('sensor_msgs not found, battery state will not be published!')
+        BatteryState = None
+    battery_state_publisher = node.create_publisher(BatteryState, '/battery_state', 10) if BatteryState else None
     estop_publisher = node.create_publisher(Bool, '/emergency_stop_status', 10)
     current_estop_bit = 0
 
@@ -102,6 +109,17 @@ def main():
                 value = 1.0
 
             battery_percentage_publisher.publish(Float64(data=value))
+            # Publish BatteryState for LCD
+            if BatteryState and battery_state_publisher:
+                bs = BatteryState()
+                # Map value (0.0-1.0) to voltage (13.6V empty, 16.8V full)
+                bs.voltage = 13.6 + (16.8 - 13.6) * value
+                bs.percentage = value
+                bs.present = True
+                bs.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
+                bs.power_supply_health = BatteryState.POWER_SUPPLY_HEALTH_GOOD
+                bs.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LIPO
+                battery_state_publisher.publish(bs)
 
             if value == 0.0:
                 number_of_low_battery_detections = number_of_low_battery_detections + 1

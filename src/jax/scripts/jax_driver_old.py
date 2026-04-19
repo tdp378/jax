@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-
 import argparse
 import math
 import time
 
 import numpy as np
 import rclpy
-import serial
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
-from sensor_msgs.msg import BatteryState, Imu
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float64MultiArray, String
 
 from jax_control.Command import Command
@@ -39,26 +37,11 @@ class JaxDriver:
         self.is_physical = is_physical
         self.use_imu = use_imu
 
-        self._sent_first_safe_pose = False
-        self._latest_mode_manager_joint_angles = None
-        self._last_battery_query_time = 0.0
-
-        self._servo_direction_defaults = [
-            1, -1, -1,
-            1, -1, -1,
-            1, -1, -1,
-            1, -1, -1,
-        ]
-        self._servo_order_defaults = list(range(12))
-        self._servo_offset_deg_defaults = [0.0] * 12
-
-        self._declare_servo_calibration_parameters()
-        self._apply_servo_calibration_parameters()
-
+        # ✅ MODE ALIAS MAP (THIS WAS YOUR ISSUE AREA)
         self._mode_map = {
             'rest': RobotMode.REST,
             'trot': RobotMode.TROT,
-            'walk': RobotMode.TROT,
+            'walk': RobotMode.TROT,    # compatibility
             'sit': RobotMode.SIT,
             'lay': RobotMode.LAY,
         }
@@ -70,64 +53,57 @@ class JaxDriver:
 
         self.desired_mode_topic = '/jax_mode'
         self.filtered_cmd_vel_topic = '/cmd_vel'
-        self.raw_joint_topic = '/jax/trot_joint_commands'
-        self.final_joint_topic = '/leg_joint_position_controller/commands'
 
         self.current_mode_topic = node.declare_parameter(
             'current_mode_topic', '/jax/current_mode'
         ).value
-        self._battery_query_period_s = float(
-            node.declare_parameter('battery_query_period_s', 0.10).value
-        )
-        self._battery_voltage_scale = float(
-            node.declare_parameter('battery_voltage_scale', 0.78).value
-        )
-        self._battery_voltage_offset = float(
-            node.declare_parameter('battery_voltage_offset', 0.0).value
-        )
 
         self._current_mode_pub = node.create_publisher(String, self.current_mode_topic, 10)
-        self._battery_pub = node.create_publisher(BatteryState, '/jax/battery', 10)
 
-        self.config = Configuration()
         self._declare_behavior_pose_parameters()
-        self._declare_global_stance_parameters()
 
+        # ---------------- SUBS ----------------
         self.mode_sub = node.create_subscription(
             String, self.desired_mode_topic, self.update_robot_mode, 10
         )
+
         self.cmd_vel_sub = node.create_subscription(
             Twist, self.filtered_cmd_vel_topic, self.update_cmd_vel, 10
         )
+
         self.estop_status_sub = node.create_subscription(
             Bool, '/emergency_stop_status', self.update_emergency_stop_status, 10
         )
 
-        if self.is_physical:
-            self.final_joint_cmd_sub = node.create_subscription(
-                Float64MultiArray,
-                self.final_joint_topic,
-                self.update_mode_manager_joint_command,
-                10,
+        # ---------------- SIM OUTPUT ----------------
+        self._sim_leg_cmds_pub = None
+        if self.is_sim:
+            # 👉 SEND TROT OUTPUT TO RAW TOPIC (mode manager will take over final output)
+            gz_leg_topic = '/jax/trot_joint_commands'
+
+            self._sim_leg_cmds_pub = node.create_publisher(
+                Float64MultiArray, gz_leg_topic, 10
             )
-        else:
-            self.final_joint_cmd_sub = None
 
-        self._raw_leg_cmds_pub = node.create_publisher(
-            Float64MultiArray, self.raw_joint_topic, 10
-        )
-
-        self._apply_global_stance_parameters()
+        # ---------------- CONFIG ----------------
+        self.config = Configuration()
         self._apply_behavior_pose_parameters()
 
+                # REST height slider mapping
+        # Slider input is expected to be:
+        #   -1.0 = bottom
+        #    0.0 = center
+        #   +1.0 = top
         self.rest_height_center = node.declare_parameter(
             'rest_height_center',
             -0.17531
         ).value
+
         self.rest_height_min = node.declare_parameter(
             'rest_height_min',
             self.rest_height_center - 0.06
         ).value
+
         self.rest_height_max = node.declare_parameter(
             'rest_height_max',
             self.rest_height_center + 0.06
@@ -136,6 +112,8 @@ class JaxDriver:
         self.rest_max_roll = float(node.declare_parameter('rest_max_roll', 0.20).value)
         self.rest_max_pitch = float(node.declare_parameter('rest_max_pitch', 0.20).value)
 
+        # Optional speed slider for TROT.
+        # Axis options: linear.x, linear.y, linear.z, angular.x, angular.y, angular.z, none
         self.trot_speed_slider_axis = str(
             node.declare_parameter('trot_speed_slider_axis', 'angular.x').value
         ).strip().lower()
@@ -155,15 +133,12 @@ class JaxDriver:
                 self.trot_speed_min_scale,
             )
 
+        # ---------------- CONTROLLER ----------------
         self.controller = Controller(self.config, four_legs_inverse_kinematics, node)
         self.state = State()
+
         self.state.robot_mode = RobotMode.REST
         self.state.behavior_state = BehaviorState.REST
-
-        self.serial_port = None
-        if self.is_physical:
-            self.serial_port = serial.Serial('/dev/ttyAMA0', 115200, timeout=0.02)
-            self.node.get_logger().info('Serial connection to Arduino established.')
 
         if self.use_imu and self.is_sim:
             imu_topic = node.declare_parameter('sim_imu_topic', '/jax/imu').value
@@ -171,54 +146,15 @@ class JaxDriver:
             self.node.get_logger().info(f'IMU enabled: subscribing to {imu_topic}')
 
         self.node.get_logger().info(
-            f'TROT speed slider axis={self.trot_speed_slider_axis}, '
-            f'scale=[{self.trot_speed_min_scale:.2f}, {self.trot_speed_max_scale:.2f}]'
+            f"TROT speed slider axis={self.trot_speed_slider_axis}, "
+            f"scale=[{self.trot_speed_min_scale:.2f}, {self.trot_speed_max_scale:.2f}]"
         )
-        self.node.get_logger().info('Jax Arduino mode driver ready')
+
+        self.node.get_logger().info("✅ Jax mode driver ready")
+
         self.publish_current_mode()
 
-    def _declare_servo_calibration_parameters(self):
-        self.node.declare_parameter('servo_direction', self._servo_direction_defaults)
-        self.node.declare_parameter('servo_order', self._servo_order_defaults)
-        self.node.declare_parameter('servo_offset_deg', self._servo_offset_deg_defaults)
-
-    def _get_fixed_length_param(self, name, expected_len, cast, default):
-        values = list(self.node.get_parameter(name).value)
-        if len(values) != expected_len:
-            self.node.get_logger().warn(
-                f"Parameter '{name}' expected {expected_len} values, got {len(values)}. Using defaults."
-            )
-            return list(default)
-        return [cast(value) for value in values]
-
-    def _apply_servo_calibration_parameters(self):
-        self.servo_direction = self._get_fixed_length_param(
-            'servo_direction', 12, int, self._servo_direction_defaults
-        )
-        self.servo_order = self._get_fixed_length_param(
-            'servo_order', 12, int, self._servo_order_defaults
-        )
-        self.servo_offset_deg = self._get_fixed_length_param(
-            'servo_offset_deg', 12, float, self._servo_offset_deg_defaults
-        )
-
-    def _declare_global_stance_parameters(self):
-        defaults = {
-            'default_stance_delta_x': float(self.config.delta_x),
-            'default_stance_delta_y': float(self.config.delta_y),
-            'front_leg_x_shift': float(self.config.front_leg_x_shift),
-            'rear_leg_x_shift': float(self.config.rear_leg_x_shift),
-            'default_z_ref': float(self.config.default_z_ref),
-        }
-        for name, default in defaults.items():
-            self.node.declare_parameter(name, default)
-
-    def _apply_global_stance_parameters(self):
-        self.config.delta_x = float(self.node.get_parameter('default_stance_delta_x').value)
-        self.config.delta_y = float(self.node.get_parameter('default_stance_delta_y').value)
-        self.config.front_leg_x_shift = float(self.node.get_parameter('front_leg_x_shift').value)
-        self.config.rear_leg_x_shift = float(self.node.get_parameter('rear_leg_x_shift').value)
-        self.config.default_z_ref = float(self.node.get_parameter('default_z_ref').value)
+    # ---------------- PARAMETERS ----------------
 
     def _declare_behavior_pose_parameters(self):
         defaults = {
@@ -231,6 +167,7 @@ class JaxDriver:
             'rest_x_offsets': [-0.010774, -0.010774, 0.0, 0.0],
             'rest_y_offsets': [0.0, 0.0, 0.0, 0.0],
         }
+
         for name, default in defaults.items():
             self.node.declare_parameter(name, default)
 
@@ -249,21 +186,30 @@ class JaxDriver:
             rest_y=self._param_vec('rest_y_offsets'),
         )
 
+    # ---------------- CALLBACKS ----------------
+
     def update_robot_mode(self, msg: String):
         mode = msg.data.strip().lower()
+
         if mode == 'stand':
-            self.node.get_logger().info('Mode -> stand (handled by mode_manager)')
+            # Stand is handled by jax_mode_manager static pose publishing.
+            # Keep driver mode unchanged so stand remains distinct from REST.
+            self.node.get_logger().info("Mode -> stand (handled by mode_manager)")
             return
+
         if mode not in self._mode_map:
-            self.node.get_logger().warn(f'Unknown mode: {mode}')
+            self.node.get_logger().warn(f"Unknown mode: {mode}")
             return
 
         self.latest_mode = self._mode_map[mode]
+
         if self.latest_mode == RobotMode.REST:
+            # Recenter height each time REST is explicitly requested.
             self.rest_recenter_pending = True
+            # Avoid stale non-zero slider commands immediately undoing the recenter.
             self.latest_cmd_vel.linear.z = 0.0
 
-        self.node.get_logger().info(f'Mode -> {self.latest_mode.value}')
+        self.node.get_logger().info(f"Mode -> {self.latest_mode.value}")
         self.publish_current_mode()
 
     def publish_current_mode(self):
@@ -277,16 +223,10 @@ class JaxDriver:
     def update_emergency_stop_status(self, msg):
         self.state.currently_estopped = 1 if msg.data else 0
 
-    def update_mode_manager_joint_command(self, msg: Float64MultiArray):
-        if len(msg.data) != 12:
-            self.node.get_logger().warn(
-                f'Ignoring final joint command: expected 12 values, got {len(msg.data)}'
-            )
-            return
-        self._latest_mode_manager_joint_angles = np.array(msg.data, dtype=float).reshape((4, 3)).T
-
     def update_imu(self, msg: Imu):
         q = msg.orientation
+
+        # Ignore empty/invalid quaternions often sent before sensor initialization.
         if q.x == 0.0 and q.y == 0.0 and q.z == 0.0 and q.w == 0.0:
             return
 
@@ -301,6 +241,7 @@ class JaxDriver:
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw = math.atan2(siny_cosp, cosy_cosp)
+
         self.state.euler_orientation = [yaw, pitch, roll]
 
     def _get_twist_axis_value(self, axis_name: str) -> float:
@@ -321,21 +262,26 @@ class JaxDriver:
     def _get_trot_speed_scale(self) -> float:
         if self.trot_speed_slider_axis == 'none':
             return 1.0
+
         raw = float(np.clip(self._get_twist_axis_value(self.trot_speed_slider_axis), -1.0, 1.0))
         if abs(raw) < self.trot_speed_slider_deadband:
             raw = 0.0
 
+        # Map [-1, 1] -> [0, 1], then to [min_scale, max_scale]
         normalized = 0.5 * (raw + 1.0)
         scale = self.trot_speed_min_scale + normalized * (
             self.trot_speed_max_scale - self.trot_speed_min_scale
         )
         return float(np.clip(scale, self.trot_speed_min_scale, self.trot_speed_max_scale))
 
+    # ---------------- CORE ----------------
+
     def build_command(self):
         command = Command()
+
         command.horizontal_velocity = np.array([
             self.latest_cmd_vel.linear.x,
-            self.latest_cmd_vel.linear.y,
+            self.latest_cmd_vel.linear.y
         ])
         command.yaw_rate = self.latest_cmd_vel.angular.z
 
@@ -347,12 +293,20 @@ class JaxDriver:
         else:
             self.state.speed_factor = 1.0
 
+        # Preserve current state by default
         command.height = self.state.height
         command.pitch = self.state.pitch
         command.roll = self.state.roll
 
+        # Height slider is normalized:
+        #   -1.0 = bottom
+        #    0.0 = center
+        #   +1.0 = top
+        #
+        # Use it in BOTH REST and TROT so gait can adapt like old Jax did.
         if self.latest_mode in (RobotMode.REST, RobotMode.TROT):
             slider = float(np.clip(self.latest_cmd_vel.linear.z, -1.0, 1.0))
+
             if slider >= 0.0:
                 command.height = self.rest_height_center + slider * (
                     self.rest_height_max - self.rest_height_center
@@ -366,6 +320,8 @@ class JaxDriver:
             command.height = float(self.rest_height_center)
             self.rest_recenter_pending = False
 
+        # In REST, map cmd_vel inputs to body attitude while feet remain planted.
+        # This supports both angular-axis and linear-axis teleop layouts.
         if self.latest_mode == RobotMode.REST:
             roll_input = np.clip(
                 self.latest_cmd_vel.angular.x + self.latest_cmd_vel.linear.y,
@@ -384,6 +340,9 @@ class JaxDriver:
 
     def apply_mode(self):
         if self.latest_mode == RobotMode.TROT:
+            # Transitioning from static poses directly into gait can leave the
+            # planner in a poor foot-state seed. Re-enter REST for one cycle,
+            # then switch to TROT on the next loop.
             if self.state.behavior_state in (BehaviorState.SIT, BehaviorState.LAY):
                 self.state.behavior_state = BehaviorState.REST
                 self.rest_recenter_pending = True
@@ -396,105 +355,44 @@ class JaxDriver:
         elif self.latest_mode == RobotMode.LAY:
             self.state.behavior_state = BehaviorState.LAY
 
-    def _request_battery_voltage(self):
-        if not self.serial_port or not self.serial_port.is_open:
-            return
-        now = time.monotonic()
-        if (now - self._last_battery_query_time) < self._battery_query_period_s:
-            return
-        self._last_battery_query_time = now
-        self.serial_port.write(b'BAT?\n')
-
-    def _publish_battery_voltage(self, raw_voltage: float):
-        batt = BatteryState()
-        batt.header.stamp = self.node.get_clock().now().to_msg()
-        batt.voltage = (raw_voltage * self._battery_voltage_scale) + self._battery_voltage_offset
-        batt.present = True
-        batt.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
-        batt.power_supply_health = BatteryState.POWER_SUPPLY_HEALTH_GOOD
-        batt.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LIPO
-        batt.percentage = float(np.clip((batt.voltage - 13.6) / (16.8 - 13.6), 0.0, 1.0))
-        self._battery_pub.publish(batt)
-
-    def _drain_serial_feedback(self):
-        if not self.serial_port or not self.serial_port.is_open:
-            return
-        try:
-            while self.serial_port.in_waiting > 0:
-                line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-                if not line or line in {'OK', 'ERR', 'JAX_SERVO_READY'}:
-                    continue
-                if line.startswith('VOLT:'):
-                    try:
-                        raw_voltage = float(line.split(':', 1)[1])
-                    except ValueError:
-                        self.node.get_logger().warn(f'Invalid battery response: {line}')
-                        continue
-                    self._publish_battery_voltage(raw_voltage)
-        except serial.SerialException as exc:
-            self.node.get_logger().warn(f'Serial feedback error: {exc}')
-
     def run(self):
         while rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.0)
+
             self.apply_mode()
 
             command = self.build_command()
+
             self.controller.run(self.state, command)
-            raw_joint_angles = self.state.joint_angles
-            self.publish_joints(raw_joint_angles)
 
-            if self.is_physical:
-                joint_angles = raw_joint_angles
-                if self._latest_mode_manager_joint_angles is not None:
-                    joint_angles = self._latest_mode_manager_joint_angles
-
-                if not self._sent_first_safe_pose:
-                    self.send_joint_angles_to_arduino(np.zeros((3, 4)))
-                    self._sent_first_safe_pose = True
-                else:
-                    self.send_joint_angles_to_arduino(joint_angles)
-
-                self._request_battery_voltage()
-                self._drain_serial_feedback()
+            if self.is_sim:
+                self.publish_joints(self.state.joint_angles)
 
             time.sleep(self._loop_period)
 
-    def send_joint_angles_to_arduino(self, joint_angles):
-        if not self.serial_port or not self.serial_port.is_open:
-            return
-        flat_angles = [float(joint_angles[i, j]) for j in range(4) for i in range(3)]
-        ordered_angles = [flat_angles[i] * self.servo_direction[i] for i in self.servo_order]
-        deg_angles = [
-            max(0, min(180, math.degrees(angle) + 90 + self.servo_offset_deg[index]))
-            for index, angle in enumerate(ordered_angles)
-        ]
-        cmd_str = ','.join(f'{a:.2f}' for a in deg_angles) + '\n'
-        self.serial_port.write(cmd_str.encode('utf-8'))
-
     def publish_joints(self, joint_angles):
-        if not self._raw_leg_cmds_pub:
+        if not self._sim_leg_cmds_pub:
             return
 
         msg = Float64MultiArray()
+
         msg.data = [
             float(joint_angles[0, 0]), float(joint_angles[1, 0]), float(joint_angles[2, 0]),
             float(joint_angles[0, 1]), float(joint_angles[1, 1]), float(joint_angles[2, 1]),
             float(joint_angles[0, 2]), float(joint_angles[1, 2]), float(joint_angles[2, 2]),
             float(joint_angles[0, 3]), float(joint_angles[1, 3]), float(joint_angles[2, 3]),
         ]
-        self._raw_leg_cmds_pub.publish(msg)
+
+        self._sim_leg_cmds_pub.publish(msg)
 
 
 def main(args=None):
     import sys
-
     argv = sys.argv if args is None else args
     parsed = parse_driver_args(argv)
 
     rclpy.init(args=args)
     node = rclpy.create_node('jax_driver')
-    driver = None
 
     try:
         driver = JaxDriver(parsed.is_sim, parsed.is_physical, parsed.use_imu, node)
@@ -502,13 +400,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if driver and driver.serial_port and driver.serial_port.is_open:
-            driver.serial_port.close()
         node.destroy_node()
-        try:
-            rclpy.shutdown()
-        except Exception:
-            pass
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

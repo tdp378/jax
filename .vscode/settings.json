@@ -1,3 +1,4 @@
 {
-    "ROS2.distro": "jazzy"
+    "ROS2.distro": "jazzy",
+    "cmake.sourceDirectory": "/home/tdp378/jax/src/jax"
 }

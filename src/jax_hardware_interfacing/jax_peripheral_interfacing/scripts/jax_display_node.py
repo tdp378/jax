@@ -68,7 +68,9 @@ class WaveshareDisplayBackend:
         self.device.data(buf)
 
     def close(self):
-        pass
+        blank = PILImage.new("RGB", (self.device._w, self.device._h), (0, 0, 0))
+        self.device.set_window(0, self.v_offset, self.device._w, self.v_offset + self.device._h)
+        self.device.data(list(blank.tobytes()))
 
 
 def _get_local_ip():
@@ -105,6 +107,8 @@ class JaxDisplayNode(Node):
         self.declare_parameter("dc_pin", 25)
         self.declare_parameter("rst_pin", 27)
         self.declare_parameter("publish_image_topic", True)
+        self.declare_parameter("battery_filter_window", 6)
+        self.declare_parameter("battery_jump_threshold", 0.75)
 
         self.v_full = self.get_parameter("battery_voltage_full").value
         self.v_empty = self.get_parameter("battery_voltage_empty").value
@@ -118,9 +122,8 @@ class JaxDisplayNode(Node):
         self.state = DisplayState()
         self.state.sim = self.get_parameter("sim").value
         self.v_history = []
-        self.v_window = 50
-        self.v_calibration = 0.781
-        self.v_jump_threshold = 1.2
+        self.v_window = max(1, int(self.get_parameter("battery_filter_window").value))
+        self.v_jump_threshold = float(self.get_parameter("battery_jump_threshold").value)
 
         self.last_imu_time = 0.0
         self.last_cam_time = 0.0
@@ -198,8 +201,10 @@ class JaxDisplayNode(Node):
         try:
             ssid, bars = msg.data.split("|", 1)
             self.state.wifi_text, self.state.wifi_bars = ssid, int(bars)
-        except Exception:
-            self.state.wifi_text = "ERROR"
+        except Exception as e:
+            self.state.wifi_text = "NO WIFI"
+            self.state.wifi_bars = 0
+            self.get_logger().warn(f"Failed to parse WiFi status: '{msg.data}' ({e})")
 
     def update(self):
         now = time.time()
