@@ -2,6 +2,7 @@
 
 import argparse
 import math
+import os
 import time
 
 import numpy as np
@@ -10,7 +11,7 @@ import serial
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
-from sensor_msgs.msg import BatteryState, Imu
+from sensor_msgs.msg import BatteryState, Imu, Temperature
 from std_msgs.msg import Bool, Float64MultiArray, String
 
 from jax_control.Command import Command
@@ -64,6 +65,7 @@ class JaxDriver:
         }
 
         self.latest_cmd_vel = Twist()
+        self._last_cmd_vel_time = None
         self.latest_mode = RobotMode.REST
         self.rest_recenter_pending = False
         self._imu_sub = None
@@ -79,15 +81,55 @@ class JaxDriver:
         self._battery_query_period_s = float(
             node.declare_parameter('battery_query_period_s', 0.10).value
         )
+        self._cmd_vel_timeout_s = max(
+            float(node.declare_parameter('cmd_vel_timeout_s', 0.25).value),
+            self._loop_period,
+        )
+        self._rest_tilt_deadband = max(
+            float(node.declare_parameter('rest_tilt_deadband', 0.08).value),
+            0.0,
+        )
+        self._height_slider_deadband = max(
+            float(node.declare_parameter('height_slider_deadband', 0.05).value),
+            0.0,
+        )
         self._battery_voltage_scale = float(
             node.declare_parameter('battery_voltage_scale', 0.78).value
         )
         self._battery_voltage_offset = float(
             node.declare_parameter('battery_voltage_offset', 0.0).value
         )
+        self._cpu_temp_enabled = bool(
+            node.declare_parameter('cpu_temp_enabled', bool(self.is_physical)).value
+        )
+        self._cpu_temp_topic = str(
+            node.declare_parameter('cpu_temp_topic', '/cpu_temperature').value
+        )
+        self._cpu_temp_frame_id = str(
+            node.declare_parameter('cpu_temp_frame_id', 'cpu').value
+        )
+        self._cpu_temp_source_path = str(
+            node.declare_parameter(
+                'cpu_temp_source_path',
+                '/sys/class/thermal/thermal_zone0/temp',
+            ).value
+        )
+        self._cpu_temp_publish_period_s = max(
+            float(node.declare_parameter('cpu_temp_publish_period_s', 1.0).value),
+            self._loop_period,
+        )
+        self._cpu_temp_variance_c = max(
+            float(node.declare_parameter('cpu_temp_variance_c', 0.0).value),
+            0.0,
+        )
+        self._last_cpu_temp_publish_time = 0.0
+        self._cpu_temp_read_error_logged = False
 
         self._current_mode_pub = node.create_publisher(String, self.current_mode_topic, 10)
         self._battery_pub = node.create_publisher(BatteryState, '/jax/battery', 10)
+        self._cpu_temp_pub = None
+        if self._cpu_temp_enabled:
+            self._cpu_temp_pub = node.create_publisher(Temperature, self._cpu_temp_topic, 10)
 
         self.config = Configuration()
         self._declare_behavior_pose_parameters()
@@ -174,6 +216,11 @@ class JaxDriver:
             f'TROT speed slider axis={self.trot_speed_slider_axis}, '
             f'scale=[{self.trot_speed_min_scale:.2f}, {self.trot_speed_max_scale:.2f}]'
         )
+        if self._cpu_temp_enabled:
+            self.node.get_logger().info(
+                f'CPU temp telemetry active on {self._cpu_temp_topic} '
+                f'from {self._cpu_temp_source_path}'
+            )
         self.node.get_logger().info('Jax Arduino mode driver ready')
         self.publish_current_mode()
 
@@ -271,8 +318,27 @@ class JaxDriver:
         msg.data = self.latest_mode.value
         self._current_mode_pub.publish(msg)
 
+    def _zero_twist_command(self):
+        self.latest_cmd_vel = Twist()
+
+    def _apply_deadband(self, value: float, deadband: float) -> float:
+        if abs(value) < deadband:
+            return 0.0
+        return value
+
+    def _get_fresh_cmd_vel(self) -> Twist:
+        if self._last_cmd_vel_time is None:
+            return Twist()
+
+        age = time.monotonic() - self._last_cmd_vel_time
+        if age > self._cmd_vel_timeout_s:
+            self._zero_twist_command()
+            self._last_cmd_vel_time = None
+        return self.latest_cmd_vel
+
     def update_cmd_vel(self, msg: Twist):
         self.latest_cmd_vel = msg
+        self._last_cmd_vel_time = time.monotonic()
 
     def update_emergency_stop_status(self, msg):
         self.state.currently_estopped = 1 if msg.data else 0
@@ -332,12 +398,14 @@ class JaxDriver:
         return float(np.clip(scale, self.trot_speed_min_scale, self.trot_speed_max_scale))
 
     def build_command(self):
+        cmd_vel = self._get_fresh_cmd_vel()
+
         command = Command()
         command.horizontal_velocity = np.array([
-            self.latest_cmd_vel.linear.x,
-            self.latest_cmd_vel.linear.y,
+            cmd_vel.linear.x,
+            cmd_vel.linear.y,
         ])
-        command.yaw_rate = self.latest_cmd_vel.angular.z
+        command.yaw_rate = cmd_vel.angular.z
 
         if self.latest_mode == RobotMode.TROT:
             speed_scale = self._get_trot_speed_scale()
@@ -352,7 +420,8 @@ class JaxDriver:
         command.roll = self.state.roll
 
         if self.latest_mode in (RobotMode.REST, RobotMode.TROT):
-            slider = float(np.clip(self.latest_cmd_vel.linear.z, -1.0, 1.0))
+            slider = float(np.clip(cmd_vel.linear.z, -1.0, 1.0))
+            slider = self._apply_deadband(slider, self._height_slider_deadband)
             if slider >= 0.0:
                 command.height = self.rest_height_center + slider * (
                     self.rest_height_max - self.rest_height_center
@@ -367,16 +436,20 @@ class JaxDriver:
             self.rest_recenter_pending = False
 
         if self.latest_mode == RobotMode.REST:
-            roll_input = np.clip(
-                self.latest_cmd_vel.angular.x + self.latest_cmd_vel.linear.y,
+            roll_input = float(np.clip(
+                cmd_vel.angular.x + cmd_vel.linear.y,
                 -1.0,
                 1.0,
-            )
-            pitch_input = np.clip(
-                self.latest_cmd_vel.angular.y + self.latest_cmd_vel.linear.x,
+            ))
+            pitch_input = float(np.clip(
+                cmd_vel.angular.y + cmd_vel.linear.x,
                 -1.0,
                 1.0,
-            )
+            ))
+
+            roll_input = self._apply_deadband(roll_input, self._rest_tilt_deadband)
+            pitch_input = self._apply_deadband(pitch_input, self._rest_tilt_deadband)
+
             command.roll = roll_input * self.rest_max_roll
             command.pitch = pitch_input * self.rest_max_pitch
 
@@ -416,6 +489,43 @@ class JaxDriver:
         batt.percentage = float(np.clip((batt.voltage - 13.6) / (16.8 - 13.6), 0.0, 1.0))
         self._battery_pub.publish(batt)
 
+    def _read_cpu_temperature_c(self):
+        if not os.path.exists(self._cpu_temp_source_path):
+            raise FileNotFoundError(self._cpu_temp_source_path)
+
+        with open(self._cpu_temp_source_path, 'r', encoding='utf-8') as temp_file:
+            raw_value = temp_file.read().strip()
+
+        temp_c = float(raw_value)
+        if temp_c > 1000.0:
+            temp_c /= 1000.0
+        return temp_c
+
+    def _publish_cpu_temperature(self):
+        if not self._cpu_temp_pub:
+            return
+
+        now = time.monotonic()
+        if (now - self._last_cpu_temp_publish_time) < self._cpu_temp_publish_period_s:
+            return
+        self._last_cpu_temp_publish_time = now
+
+        try:
+            temp_c = self._read_cpu_temperature_c()
+            self._cpu_temp_read_error_logged = False
+        except (OSError, ValueError) as exc:
+            if not self._cpu_temp_read_error_logged:
+                self.node.get_logger().warn(f'CPU temp read failed: {exc}')
+                self._cpu_temp_read_error_logged = True
+            return
+
+        msg = Temperature()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._cpu_temp_frame_id
+        msg.temperature = temp_c
+        msg.variance = self._cpu_temp_variance_c * self._cpu_temp_variance_c
+        self._cpu_temp_pub.publish(msg)
+
     def _drain_serial_feedback(self):
         if not self.serial_port or not self.serial_port.is_open:
             return
@@ -424,13 +534,21 @@ class JaxDriver:
                 line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
                 if not line or line in {'OK', 'ERR', 'JAX_SERVO_READY'}:
                     continue
+                raw_voltage = None
                 if line.startswith('VOLT:'):
+                    payload = line.split(':', 1)[1]
                     try:
-                        raw_voltage = float(line.split(':', 1)[1])
+                        raw_voltage = float(payload)
                     except ValueError:
                         self.node.get_logger().warn(f'Invalid battery response: {line}')
                         continue
-                    self._publish_battery_voltage(raw_voltage)
+                else:
+                    try:
+                        raw_voltage = float(line)
+                    except ValueError:
+                        continue
+
+                self._publish_battery_voltage(raw_voltage)
         except serial.SerialException as exc:
             self.node.get_logger().warn(f'Serial feedback error: {exc}')
 
@@ -457,6 +575,7 @@ class JaxDriver:
 
                 self._request_battery_voltage()
                 self._drain_serial_feedback()
+                self._publish_cpu_temperature()
 
             time.sleep(self._loop_period)
 

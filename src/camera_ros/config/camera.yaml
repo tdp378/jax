@@ -1,0 +1,36 @@
+camera:
+  ros__parameters:
+    # Camera index or libcamera name.
+    camera: 0
+
+    # Stream role: raw, still, video, or viewfinder.
+    role: viewfinder
+
+    # Default output resolution.
+    width: 640
+    height: 480
+
+    # Use a 24-bit RGB stream so web_video_server can encode it reliably.
+    format: "RGB888"
+
+    # Rotate image in 90 degree steps if the camera is mounted differently.
+    orientation: 0
+
+    # Frame id used in published Image and CameraInfo headers.
+    frame_id: camera
+
+    # Use sensor timestamps by default.
+    use_node_time: false
+
+    # Optional raw sensor mode in WIDTH:HEIGHT form.
+    # Uncomment only if you want to pin the sensor crop / FoV behavior.
+    # sensor_mode: "1536:864"
+
+    # Optional calibration file URL.
+    # Must be a URL, not a plain file path.
+    # Example:
+    # camera_info_url: "file:///home/tdp378/.ros/camera_info/imx708_640x480.yaml"
+
+    # Optional fixed frame rate via libcamera control, in microseconds.
+    # Example for 20 FPS:
+    # FrameDurationLimits: [50000, 50000]

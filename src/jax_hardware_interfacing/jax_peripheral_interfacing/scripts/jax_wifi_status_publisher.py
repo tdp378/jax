@@ -30,7 +30,6 @@ class WifiStatusPublisher(Node):
         if not ssid or not isinstance(bars, int):
             ssid, bars = "NO WIFI", 0
         msg.data = f"{ssid}|{bars}"
-        self.get_logger().info(f"Publishing WiFi status: {msg.data}")
         self.publisher_.publish(msg)
 
     def get_wifi_status(self):
@@ -83,9 +82,10 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

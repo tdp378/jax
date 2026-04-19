@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Imu, BatteryState, Image
+from sensor_msgs.msg import Imu, BatteryState, CameraInfo, Image, Temperature
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 
@@ -91,8 +91,10 @@ class JaxDisplayNode(Node):
         # ---------------- Parameters ----------------
         self.declare_parameter("mode_topic", "/jax_mode")
         self.declare_parameter("imu_topic", "/imu/data")
-        self.declare_parameter("battery_state_topic", "/battery_state")
-        self.declare_parameter("cam_topic", "/camera/image_raw")
+        self.declare_parameter("battery_state_topic", "/jax/battery")
+        self.declare_parameter("cpu_temp_topic", "/cpu_temperature")
+        self.declare_parameter("cam_topic", "/camera/camera_info")
+        self.declare_parameter("enable_camera_status", False)
         self.declare_parameter("sim", True)
         self.declare_parameter("battery_voltage_full", 16.8)
         self.declare_parameter("battery_voltage_empty", 13.6)
@@ -117,6 +119,7 @@ class JaxDisplayNode(Node):
         self.boot_duration = self.get_parameter("boot_duration").value
         self.mode_flash_duration = self.get_parameter("mode_flash_duration").value
         cam_topic = self.get_parameter("cam_topic").value
+        self._enable_camera_status = bool(self.get_parameter("enable_camera_status").value)
 
         # ---------------- State ----------------
         self.state = DisplayState()
@@ -131,6 +134,7 @@ class JaxDisplayNode(Node):
         self.flash_mode = None
         self.flash_until = 0.0
         self.local_ip = _get_local_ip()
+        self.state.cam_ok = not self._enable_camera_status
 
         # ---------------- Subscribers ----------------
         self.create_subscription(
@@ -140,9 +144,12 @@ class JaxDisplayNode(Node):
         self.create_subscription(
             BatteryState, self.get_parameter("battery_state_topic").value, self.battery_cb, 10)
         self.create_subscription(
-            String, '/jax/wifi_status', self.wifi_status_cb, 10)
+            Temperature, self.get_parameter("cpu_temp_topic").value, self.cpu_temp_cb, 10)
         self.create_subscription(
-            Image, cam_topic, self.cam_cb, 10)
+            String, '/jax/wifi_status', self.wifi_status_cb, 10)
+        if self._enable_camera_status:
+            self.create_subscription(
+                CameraInfo, cam_topic, self.cam_cb, 10)
 
         # ---------------- Image topic publisher ----------------
         self.bridge = CvBridge()
@@ -179,7 +186,7 @@ class JaxDisplayNode(Node):
         self.last_imu_time = time.time()
         self.state.imu_ok = True
 
-    def cam_cb(self, msg: Image):
+    def cam_cb(self, msg: CameraInfo):
         self.last_cam_time = time.time()
         self.state.cam_ok = True
 
@@ -206,10 +213,14 @@ class JaxDisplayNode(Node):
             self.state.wifi_bars = 0
             self.get_logger().warn(f"Failed to parse WiFi status: '{msg.data}' ({e})")
 
+    def cpu_temp_cb(self, msg: Temperature):
+        self.state.cpu_temp_c = float(msg.temperature)
+
     def update(self):
         now = time.time()
         self.state.imu_ok = (now - self.last_imu_time) < 1.0
-        self.state.cam_ok = (now - self.last_cam_time) < 2.0
+        if self._enable_camera_status:
+            self.state.cam_ok = (now - self.last_cam_time) < 2.0
         self.state.ros_ok = rclpy.ok()
 
         if (now - self.start_time) < self.boot_duration:
@@ -283,6 +294,8 @@ class JaxDisplayNode(Node):
                           CYAN if i < s.wifi_bars else GRAY, -1)
         cv2.putText(img, self.local_ip, (100, 65),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, WHITE, 1)
+        cv2.putText(img, f"CPU {s.cpu_temp_c:.1f}C", (100, 86),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, WHITE, 1)
 
         # LED indicators
         ly = 92
@@ -323,7 +336,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

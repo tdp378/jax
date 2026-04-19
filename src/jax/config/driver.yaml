@@ -11,7 +11,7 @@
 
     # Final degree trim applied after direction and +90 conversion.
     # Use this for horn zero/calibration issues like foot pad not sitting flat.
-    servo_offset_deg: [4.0, 0.0, -45.0, 4.0, 0.0, -45.0, -4.0, 0.0, -45.0, 5.0, 5.0, -45.0]
+    servo_offset_deg: [4.0, 0.0, -55.0, 4.0, 0.0, -55.0, -4.0, 0.0, -55.0, 5.0, 5.0, -55.0]
 
     # Global neutral stance used by IK-driven modes like rest and trot.
     # delta_x: front/back spread from body centerline.
@@ -29,7 +29,7 @@
 
     # Global nominal body height used by the default stance.
     # More negative = body lower. Less negative = body higher.
-    default_z_ref: -0.25
+    default_z_ref: -0.20
 
     sit_x_offsets: [-0.03, -0.03, 0.09, 0.09]
     sit_y_offsets: [0.0, 0.0, 0.0, 0.0]
@@ -42,7 +42,7 @@
     # Rest tuning order is: [front_right, front_left, rear_right, rear_left]
     # x offsets move feet fore/aft in body space.
     # More positive = foot farther forward. More negative = foot farther back.
-    rest_x_offsets: [-0.010774, -0.010774, 0.0, 0.0]
+    rest_x_offsets: [0.0, 0.0, 0.0, 0.0]
 
     # y offsets move feet sideways in body space.
     # Positive pushes left legs farther left and right legs toward center.
@@ -59,6 +59,15 @@
     rest_max_roll: 0.20
     rest_max_pitch: 0.20
 
+    # Zero stale velocity commands so old joystick/network input does not linger.
+    cmd_vel_timeout_s: 0.25
+
+    # Ignore small rest-mode tilt inputs to reduce twitching from noisy cmd_vel.
+    rest_tilt_deadband: 0.08
+
+    # Ignore small height slider inputs to reduce jitter around neutral height.
+    height_slider_deadband: 0.05
+
     # Battery telemetry tuning.
     # The Arduino only replies to BAT? requests, so the Pi polls it at this rate.
     battery_query_period_s: 0.10
@@ -66,6 +75,15 @@
     # Final battery calibration: published_voltage = raw_voltage * scale + offset
     battery_voltage_scale: 0.78
     battery_voltage_offset: -1.0
+
+    # CPU telemetry tuning.
+    # Reads Raspberry Pi CPU temperature from sysfs and publishes sensor_msgs/Temperature.
+    cpu_temp_enabled: true
+    cpu_temp_topic: /cpu_temperature
+    cpu_temp_frame_id: cpu
+    cpu_temp_source_path: /sys/class/thermal/thermal_zone0/temp
+    cpu_temp_publish_period_s: 1.0
+    cpu_temp_variance_c: 0.0
 
     # LCD battery smoothing. Smaller window = faster update.
     battery_filter_window: 6
