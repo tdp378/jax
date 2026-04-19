@@ -1,9 +1,8 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <Adafruit_BNO08x.h>
+#include <Adafruit_BNO055.h>
 #include <Adafruit_NeoPixel.h>
-#include <sh2/sh2.h>
-#include <sh2/sh2_SensorValue.h>
+#include <utility/imumaths.h>
 #include <math.h>
 
 #define SERVO_COUNT 12
@@ -14,7 +13,7 @@
 #define PIXEL_COUNT 8
 #define OE_PIN 7
 #define BATTERY_PIN A6
-#define IMU_I2C_ADDRESS 0x4A
+#define IMU_I2C_ADDRESS 0x28
 
 // --- MODES (Added NIGHT) ---
 enum Mode { IDLE, STALKER, LOW_BAT, DISABLED, NIGHT };
@@ -26,7 +25,7 @@ const float DIVIDER_RATIO = (RESISTOR_1 + RESISTOR_2) / RESISTOR_2;
 const float V_REF = 5.0;
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
-Adafruit_BNO08x bno08x(-1);
+Adafruit_BNO055 bno055 = Adafruit_BNO055(55, IMU_I2C_ADDRESS, &Wire);
 Adafruit_NeoPixel strip(PIXEL_COUNT, PIXEL_PIN, NEO_GRBW + NEO_KHZ800);
 
 const uint8_t servoChannel[SERVO_COUNT] = {6, 7, 8, 9, 11, 12, 3, 4, 5, 0, 1, 2};
@@ -39,7 +38,6 @@ const unsigned long neoIntervalMs = 20;
 float smoothedBatteryVolt = 0.0;
 unsigned long lastBatUpdateMs = 0;
 bool servosEngaged = false;
-sh2_SensorValue_t imuSensorValue;
 bool imuReady = false;
 unsigned long lastImuInitAttemptMs = 0;
 const unsigned long imuInitRetryIntervalMs = 2000;
@@ -66,27 +64,13 @@ void initImu() {
   }
 
   lastImuInitAttemptMs = now;
-  if (!bno08x.begin_I2C(IMU_I2C_ADDRESS, &Wire)) {
+  if (!bno055.begin()) {
     Serial.println("IMU_INIT_FAIL");
     imuReady = false;
     return;
   }
 
-  if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
-    Serial.println("IMU_ROT_FAIL");
-    imuReady = false;
-    return;
-  }
-  if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED)) {
-    Serial.println("IMU_GYRO_FAIL");
-    imuReady = false;
-    return;
-  }
-  if (!bno08x.enableReport(SH2_ACCELEROMETER)) {
-    Serial.println("IMU_ACCEL_FAIL");
-    imuReady = false;
-    return;
-  }
+  bno055.setExtCrystalUse(true);
 
   imuReady = true;
   Serial.println("IMU_READY");
@@ -98,28 +82,22 @@ void updateImu() {
     return;
   }
 
-  while (bno08x.getSensorEvent(&imuSensorValue)) {
-    switch (imuSensorValue.sensorId) {
-      case SH2_ROTATION_VECTOR:
-        imuQuatI = imuSensorValue.un.rotationVector.i;
-        imuQuatJ = imuSensorValue.un.rotationVector.j;
-        imuQuatK = imuSensorValue.un.rotationVector.k;
-        imuQuatReal = imuSensorValue.un.rotationVector.real;
-        break;
+  imu::Quaternion quat = bno055.getQuat();
+  imu::Vector<3> gyro = bno055.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+  imu::Vector<3> linearAccel = bno055.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
 
-      case SH2_GYROSCOPE_CALIBRATED:
-        imuGyroX = imuSensorValue.un.gyroscope.x;
-        imuGyroY = imuSensorValue.un.gyroscope.y;
-        imuGyroZ = imuSensorValue.un.gyroscope.z;
-        break;
+  imuQuatI = quat.x();
+  imuQuatJ = quat.y();
+  imuQuatK = quat.z();
+  imuQuatReal = quat.w();
 
-      case SH2_ACCELEROMETER:
-        imuAccelX = imuSensorValue.un.accelerometer.x;
-        imuAccelY = imuSensorValue.un.accelerometer.y;
-        imuAccelZ = imuSensorValue.un.accelerometer.z;
-        break;
-    }
-  }
+  imuGyroX = gyro.x();
+  imuGyroY = gyro.y();
+  imuGyroZ = gyro.z();
+
+  imuAccelX = linearAccel.x();
+  imuAccelY = linearAccel.y();
+  imuAccelZ = linearAccel.z();
 }
 
 void publishImu() {
