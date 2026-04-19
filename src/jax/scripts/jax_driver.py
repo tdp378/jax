@@ -5,6 +5,8 @@ import math
 import os
 import time
 
+from typing import Optional
+
 import numpy as np
 import rclpy
 import serial
@@ -124,12 +126,36 @@ class JaxDriver:
         )
         self._last_cpu_temp_publish_time = 0.0
         self._cpu_temp_read_error_logged = False
+        self._physical_imu_via_serial = bool(
+            node.declare_parameter('physical_imu_via_serial', bool(self.is_physical)).value
+        )
+        self._imu_frame_id = str(
+            node.declare_parameter('imu_frame_id', 'imu_link').value
+        )
+        self._imu_orientation_variance = max(
+            float(node.declare_parameter('imu_orientation_variance', 0.02).value),
+            0.0,
+        )
+        self._imu_angular_velocity_variance = max(
+            float(node.declare_parameter('imu_angular_velocity_variance', 0.03).value),
+            0.0,
+        )
+        self._imu_linear_acceleration_variance = max(
+            float(node.declare_parameter('imu_linear_acceleration_variance', 0.2).value),
+            0.0,
+        )
 
         self._current_mode_pub = node.create_publisher(String, self.current_mode_topic, 10)
         self._battery_pub = node.create_publisher(BatteryState, '/jax/battery', 10)
         self._cpu_temp_pub = None
         if self._cpu_temp_enabled:
             self._cpu_temp_pub = node.create_publisher(Temperature, self._cpu_temp_topic, 10)
+        self._imu_pub = None
+        if self.use_imu and self.is_physical and self._physical_imu_via_serial:
+            physical_imu_topic = str(
+                node.declare_parameter('physical_imu_topic', '/imu/data').value
+            )
+            self._imu_pub = node.create_publisher(Imu, physical_imu_topic, 10)
 
         self.config = Configuration()
         self._declare_behavior_pose_parameters()
@@ -207,10 +233,15 @@ class JaxDriver:
             self.serial_port = serial.Serial('/dev/ttyAMA0', 115200, timeout=0.02)
             self.node.get_logger().info('Serial connection to Arduino established.')
 
-        if self.use_imu and self.is_sim:
-            imu_topic = node.declare_parameter('sim_imu_topic', '/jax/imu').value
+        if self.use_imu and not (self.is_physical and self._physical_imu_via_serial):
+            imu_topic = node.declare_parameter(
+                'sim_imu_topic' if self.is_sim else 'physical_imu_topic',
+                '/jax/imu' if self.is_sim else '/imu/data',
+            ).value
             self._imu_sub = node.create_subscription(Imu, imu_topic, self.update_imu, 10)
             self.node.get_logger().info(f'IMU enabled: subscribing to {imu_topic}')
+        elif self.use_imu and self.is_physical and self._physical_imu_via_serial:
+            self.node.get_logger().info('IMU enabled: expecting IMU data from Arduino serial feedback')
 
         self.node.get_logger().info(
             f'TROT speed slider axis={self.trot_speed_slider_axis}, '
@@ -526,6 +557,60 @@ class JaxDriver:
         msg.variance = self._cpu_temp_variance_c * self._cpu_temp_variance_c
         self._cpu_temp_pub.publish(msg)
 
+    def _covariance(self, variance: float):
+        return [variance, 0.0, 0.0, 0.0, variance, 0.0, 0.0, 0.0, variance]
+
+    def _build_imu_msg(self, values) -> Optional[Imu]:
+        if len(values) != 10:
+            return None
+
+        msg = Imu()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._imu_frame_id
+        msg.orientation.x = float(values[0])
+        msg.orientation.y = float(values[1])
+        msg.orientation.z = float(values[2])
+        msg.orientation.w = float(values[3])
+        msg.orientation_covariance = self._covariance(
+            self._imu_orientation_variance * self._imu_orientation_variance
+        )
+        msg.angular_velocity.x = float(values[4])
+        msg.angular_velocity.y = float(values[5])
+        msg.angular_velocity.z = float(values[6])
+        msg.angular_velocity_covariance = self._covariance(
+            self._imu_angular_velocity_variance * self._imu_angular_velocity_variance
+        )
+        msg.linear_acceleration.x = float(values[7])
+        msg.linear_acceleration.y = float(values[8])
+        msg.linear_acceleration.z = float(values[9])
+        msg.linear_acceleration_covariance = self._covariance(
+            self._imu_linear_acceleration_variance * self._imu_linear_acceleration_variance
+        )
+        return msg
+
+    def _handle_serial_imu(self, line: str) -> bool:
+        if not line.startswith('IMU:'):
+            return False
+        payload = line.split(':', 1)[1]
+        try:
+            values = [float(part.strip()) for part in payload.split(',')]
+        except ValueError:
+            self.node.get_logger().warn(f'Invalid IMU response: {line}')
+            return True
+
+        msg = self._build_imu_msg(values)
+        if msg is None:
+            self.node.get_logger().warn(
+                'Invalid IMU response: expected 10 comma-separated values '
+                '(qx,qy,qz,qw,gx,gy,gz,ax,ay,az)'
+            )
+            return True
+
+        self.update_imu(msg)
+        if self._imu_pub is not None:
+            self._imu_pub.publish(msg)
+        return True
+
     def _drain_serial_feedback(self):
         if not self.serial_port or not self.serial_port.is_open:
             return
@@ -533,6 +618,8 @@ class JaxDriver:
             while self.serial_port.in_waiting > 0:
                 line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
                 if not line or line in {'OK', 'ERR', 'JAX_SERVO_READY'}:
+                    continue
+                if self._handle_serial_imu(line):
                     continue
                 raw_voltage = None
                 if line.startswith('VOLT:'):

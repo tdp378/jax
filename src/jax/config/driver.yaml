@@ -88,3 +88,20 @@
     # LCD battery smoothing. Smaller window = faster update.
     battery_filter_window: 6
     battery_jump_threshold: 0.75
+
+    # IMU topic selection.
+    # Simulation publishes to /jax/imu; physical hardware should publish to /imu/data.
+    sim_imu_topic: /jax/imu
+    physical_imu_topic: /imu/data
+
+    # Physical robot IMU is expected over Arduino serial by default.
+    physical_imu_via_serial: true
+    imu_orientation_variance: 0.02
+    imu_angular_velocity_variance: 0.03
+    imu_linear_acceleration_variance: 0.2
+
+    # Direct Pi-side BNO08x I2C settings, used only when use_direct_i2c_imu:=1.
+    imu_frame_id: imu_link
+    imu_publish_hz: 50.0
+    imu_i2c_address: 74
+    imu_retry_period_s: 2.0
