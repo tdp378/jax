@@ -148,8 +148,8 @@ void handleSerial() {
       if (lineBuf.length() > 0) {
         int angles[SERVO_COUNT];
         if (lineBuf == "HOME") {
-          enableServos(true);
           moveHome();
+          if (!servosEngaged) enableServos(true);
           Serial.println("OK");
         } else if (lineBuf == "KILL") {
           enableServos(false);
@@ -168,8 +168,8 @@ void handleSerial() {
           currentMode = NIGHT;
           Serial.println("MODE_WHITE");
         } else if (parseAngles(lineBuf, angles)) {
-          if (!servosEngaged) enableServos(true);
           applyPoseRaw(angles);
+          if (!servosEngaged) enableServos(true);
           Serial.println("OK");
         } else {
           Serial.println("ERR");
@@ -189,7 +189,6 @@ void setup() {
   Wire.begin();
   pwm.begin();
   pwm.setPWMFreq(PWM_FREQ);
-  moveHome();
   strip.begin();
   strip.show();
   bootAnimation();

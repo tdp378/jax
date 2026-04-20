@@ -62,6 +62,10 @@
     # Zero stale velocity commands so old joystick/network input does not linger.
     cmd_vel_timeout_s: 0.25
 
+    # Blend from the initial safe pose into rest on startup.
+    # Larger values reduce the boot snap but take longer to settle.
+    startup_transition_duration_s: 1.0
+
     # Ignore small rest-mode tilt inputs to reduce twitching from noisy cmd_vel.
     rest_tilt_deadband: 0.08
 

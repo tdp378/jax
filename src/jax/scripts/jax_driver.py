@@ -42,7 +42,7 @@ class JaxDriver:
         self.is_physical = is_physical
         self.use_imu = use_imu
 
-        self._sent_first_safe_pose = False
+        self._startup_blend_step = 0
         self._latest_mode_manager_joint_angles = None
         self._last_battery_query_time = 0.0
         self._last_imu_query_time = 0.0
@@ -87,6 +87,13 @@ class JaxDriver:
         self._cmd_vel_timeout_s = max(
             float(node.declare_parameter('cmd_vel_timeout_s', 0.25).value),
             self._loop_period,
+        )
+        self._startup_transition_duration_s = max(
+            float(node.declare_parameter('startup_transition_duration_s', 1.0).value),
+            0.0,
+        )
+        self._startup_transition_steps = int(
+            math.ceil(self._startup_transition_duration_s / self._loop_period)
         )
         self._rest_tilt_deadband = max(
             float(node.declare_parameter('rest_tilt_deadband', 0.08).value),
@@ -667,11 +674,11 @@ class JaxDriver:
                 if self._latest_mode_manager_joint_angles is not None:
                     joint_angles = self._latest_mode_manager_joint_angles
 
-                if not self._sent_first_safe_pose:
-                    self.send_joint_angles_to_arduino(np.zeros((3, 4)))
-                    self._sent_first_safe_pose = True
-                else:
+                startup_deg_angles = self._blend_startup_servo_degrees(joint_angles)
+                if startup_deg_angles is None:
                     self.send_joint_angles_to_arduino(joint_angles)
+                else:
+                    self._send_servo_degrees_to_arduino(startup_deg_angles)
 
                 self._request_battery_voltage()
                 self._request_imu_sample()
@@ -683,14 +690,40 @@ class JaxDriver:
     def send_joint_angles_to_arduino(self, joint_angles):
         if not self.serial_port or not self.serial_port.is_open:
             return
+
+        deg_angles = self._joint_angles_to_servo_degrees(joint_angles)
+        self._send_servo_degrees_to_arduino(deg_angles)
+
+    def _send_servo_degrees_to_arduino(self, deg_angles):
+        if not self.serial_port or not self.serial_port.is_open:
+            return
+
+        cmd_str = ','.join(f'{a:.2f}' for a in deg_angles) + '\n'
+        self.serial_port.write(cmd_str.encode('utf-8'))
+
+    def _joint_angles_to_servo_degrees(self, joint_angles):
         flat_angles = [float(joint_angles[i, j]) for j in range(4) for i in range(3)]
         ordered_angles = [flat_angles[i] * self.servo_direction[i] for i in self.servo_order]
-        deg_angles = [
+        return [
             max(0, min(180, math.degrees(angle) + 90 + self.servo_offset_deg[index]))
             for index, angle in enumerate(ordered_angles)
         ]
-        cmd_str = ','.join(f'{a:.2f}' for a in deg_angles) + '\n'
-        self.serial_port.write(cmd_str.encode('utf-8'))
+
+    def _blend_startup_servo_degrees(self, target_joint_angles):
+        if self._startup_transition_steps <= 0:
+            return None
+
+        if self._startup_blend_step >= self._startup_transition_steps:
+            return None
+
+        self._startup_blend_step += 1
+        alpha = self._startup_blend_step / float(self._startup_transition_steps)
+        target_deg_angles = np.array(
+            self._joint_angles_to_servo_degrees(target_joint_angles),
+            dtype=float,
+        )
+        blended_deg_angles = 90.0 + (target_deg_angles - 90.0) * alpha
+        return blended_deg_angles.tolist()
 
     def publish_joints(self, joint_angles):
         if not self._raw_leg_cmds_pub:
