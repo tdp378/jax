@@ -35,7 +35,6 @@ Modes (tap):
   2: rest
   3: sit
   4: lay
-  5: stand
 
 Stop:
   Space: zero twist immediately
@@ -91,7 +90,7 @@ class KeyboardCmdMode:
             "Body (rest):",
             "  Arrows pitch/roll, 9/0 height",
             "Modes (tap):",
-            "  1 trot, 2 rest, 3 sit, 4 lay, 5 stand",
+            "  1 trot, 2 rest, 3 sit, 4 lay",
             "Stop:",
             "  Space zero twist",
         ]
@@ -133,8 +132,6 @@ class KeyboardCmdMode:
             self._publish_mode('sit')
         elif ch == '4':
             self._publish_mode('lay')
-        elif ch == '5':
-            self._publish_mode('stand')
         elif ch == '9':
             self._twist.linear.z = -hgt
         elif ch == '0':

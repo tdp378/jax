@@ -1,8 +1,6 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <Adafruit_BNO055.h>
 #include <Adafruit_NeoPixel.h>
-#include <utility/imumaths.h>
 #include <math.h>
 
 #define SERVO_COUNT 12
@@ -13,7 +11,6 @@
 #define PIXEL_COUNT 8
 #define OE_PIN 7
 #define BATTERY_PIN A6
-#define IMU_I2C_ADDRESS 0x28
 
 // --- MODES (Added NIGHT) ---
 enum Mode { IDLE, STALKER, LOW_BAT, DISABLED, NIGHT };
@@ -25,7 +22,6 @@ const float DIVIDER_RATIO = (RESISTOR_1 + RESISTOR_2) / RESISTOR_2;
 const float V_REF = 5.0;
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
-Adafruit_BNO055 bno055 = Adafruit_BNO055(55, IMU_I2C_ADDRESS, &Wire);
 Adafruit_NeoPixel strip(PIXEL_COUNT, PIXEL_PIN, NEO_GRBW + NEO_KHZ800);
 
 const uint8_t servoChannel[SERVO_COUNT] = {6, 7, 8, 9, 11, 12, 3, 4, 5, 0, 1, 2};
@@ -38,85 +34,8 @@ const unsigned long neoIntervalMs = 20;
 float smoothedBatteryVolt = 0.0;
 unsigned long lastBatUpdateMs = 0;
 bool servosEngaged = false;
-bool imuReady = false;
-unsigned long lastImuInitAttemptMs = 0;
-const unsigned long imuInitRetryIntervalMs = 2000;
-unsigned long lastImuPublishMs = 0;
-const unsigned long imuPublishIntervalMs = 20;
-
-float imuQuatI = 0.0f;
-float imuQuatJ = 0.0f;
-float imuQuatK = 0.0f;
-float imuQuatReal = 1.0f;
-float imuGyroX = 0.0f;
-float imuGyroY = 0.0f;
-float imuGyroZ = 0.0f;
-float imuAccelX = 0.0f;
-float imuAccelY = 0.0f;
-float imuAccelZ = 0.0f;
 
 void(* resetFunc) (void) = 0; 
-
-void initImu() {
-  unsigned long now = millis();
-  if (imuReady || (now - lastImuInitAttemptMs) < imuInitRetryIntervalMs) {
-    return;
-  }
-
-  lastImuInitAttemptMs = now;
-  if (!bno055.begin()) {
-    Serial.println("IMU_INIT_FAIL");
-    imuReady = false;
-    return;
-  }
-
-  bno055.setExtCrystalUse(true);
-
-  imuReady = true;
-  Serial.println("IMU_READY");
-}
-
-void updateImu() {
-  if (!imuReady) {
-    initImu();
-    return;
-  }
-
-  imu::Quaternion quat = bno055.getQuat();
-  imu::Vector<3> gyro = bno055.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
-  imu::Vector<3> linearAccel = bno055.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
-
-  imuQuatI = quat.x();
-  imuQuatJ = quat.y();
-  imuQuatK = quat.z();
-  imuQuatReal = quat.w();
-
-  imuGyroX = gyro.x();
-  imuGyroY = gyro.y();
-  imuGyroZ = gyro.z();
-
-  imuAccelX = linearAccel.x();
-  imuAccelY = linearAccel.y();
-  imuAccelZ = linearAccel.z();
-}
-
-void publishImu() {
-  if (!imuReady) return;
-  if (millis() - lastImuPublishMs < imuPublishIntervalMs) return;
-  lastImuPublishMs = millis();
-
-  Serial.print("IMU:");
-  Serial.print(imuQuatI, 6); Serial.print(',');
-  Serial.print(imuQuatJ, 6); Serial.print(',');
-  Serial.print(imuQuatK, 6); Serial.print(',');
-  Serial.print(imuQuatReal, 6); Serial.print(',');
-  Serial.print(imuGyroX, 6); Serial.print(',');
-  Serial.print(imuGyroY, 6); Serial.print(',');
-  Serial.print(imuGyroZ, 6); Serial.print(',');
-  Serial.print(imuAccelX, 6); Serial.print(',');
-  Serial.print(imuAccelY, 6); Serial.print(',');
-  Serial.println(imuAccelZ, 6);
-}
 
 void writeServoDeg(int idx, int deg) {
   int pulse = map(deg, 0, 180, SERVOMIN, SERVOMAX);
@@ -268,7 +187,6 @@ void setup() {
   digitalWrite(OE_PIN, HIGH);
   Serial.begin(115200);
   Wire.begin();
-  initImu();
   pwm.begin();
   pwm.setPWMFreq(PWM_FREQ);
   moveHome();
@@ -282,6 +200,4 @@ void loop() {
   handleSerial();
   updateNeoPixels();
   updateBattery();
-  updateImu();
-  publishImu();
 }

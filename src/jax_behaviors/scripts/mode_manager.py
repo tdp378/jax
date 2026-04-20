@@ -28,7 +28,7 @@ class JaxModeManager(Node):
 
         self.joint_names, self.poses = self.load_poses(poses_file)
 
-        self.static_modes = { 'sit', 'lay', 'stand' }
+        self.static_modes = { 'sit', 'lay' }
         self.dynamic_modes = {'trot', 'rest'}
         self.valid_modes = self.static_modes | self.dynamic_modes
 
@@ -122,9 +122,9 @@ class JaxModeManager(Node):
         if mode == self.current_mode:
             return
 
-        if mode == 'trot' and self.current_mode not in {'stand', 'rest'}:
+        if mode == 'trot' and self.current_mode != 'rest':
             self.get_logger().warn(
-                f"Blocked transition: {self.current_mode} -> trot. Enter 'stand' or 'rest' before 'trot'."
+                f"Blocked transition: {self.current_mode} -> trot. Enter 'rest' before 'trot'."
             )
             return
 

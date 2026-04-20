@@ -39,10 +39,18 @@ class Controller:
         self.stabilize_deadband = getattr(self.config, 'stabilize_deadband', 0.04)
         self.stabilize_integral_limit = getattr(self.config, 'stabilize_integral_limit', 0.2)
         self.stabilize_compensation_limit = getattr(self.config, 'stabilize_compensation_limit', 0.5)
+        self.imu_stabilization_enabled = bool(
+            node.declare_parameter('imu_stabilization_enabled', True).value
+        )
         self._roll_error_integral = 0.0
         self._pitch_error_integral = 0.0
         self._prev_roll_error = 0.0
         self._prev_pitch_error = 0.0
+
+        if self.imu_stabilization_enabled:
+            self._node.get_logger().info('IMU body stabilization enabled')
+        else:
+            self._node.get_logger().info('IMU body stabilization disabled')
 
         self.hop_transition_mapping = {BehaviorState.REST: BehaviorState.HOP, BehaviorState.HOP: BehaviorState.FINISHHOP, BehaviorState.FINISHHOP: BehaviorState.REST, BehaviorState.TROT: BehaviorState.HOP}
         self.trot_transition_mapping = {BehaviorState.REST: BehaviorState.TROT, BehaviorState.TROT: BehaviorState.REST, BehaviorState.HOP: BehaviorState.TROT, BehaviorState.FINISHHOP: BehaviorState.TROT}
@@ -105,6 +113,9 @@ class Controller:
         state.joint_angles = self.inverse_kinematics(rotated_foot_locations, self.config)
 
     def _imu_attitude_compensation(self, orientation):
+        if not self.imu_stabilization_enabled:
+            return 0.0, 0.0
+
         _, pitch, roll = orientation
         dt = max(self.config.dt, 1e-4)
 
@@ -215,6 +226,9 @@ class Controller:
         return state.joint_angles
 
     def stabilise_with_IMU(self, foot_locations, orientation):
+        if not self.imu_stabilization_enabled:
+            return foot_locations
+
         roll_compensation, pitch_compensation = self._imu_attitude_compensation(orientation)
         rmat = euler2mat(roll_compensation, pitch_compensation, 0)
         rotated_foot_locations = rmat.T @ foot_locations

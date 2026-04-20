@@ -45,7 +45,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('is_sim', default_value='0'),
         DeclareLaunchArgument('is_physical', default_value='1'),
-        DeclareLaunchArgument('use_imu', default_value='1'),
+        DeclareLaunchArgument('use_imu', default_value='0'),
         DeclareLaunchArgument('use_camera', default_value='1'),
         DeclareLaunchArgument('camera_params_file', default_value=camera_params_default),
         DeclareLaunchArgument('camera', default_value=''),

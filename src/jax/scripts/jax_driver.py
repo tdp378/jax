@@ -45,6 +45,7 @@ class JaxDriver:
         self._sent_first_safe_pose = False
         self._latest_mode_manager_joint_angles = None
         self._last_battery_query_time = 0.0
+        self._last_imu_query_time = 0.0
 
         self._servo_direction_defaults = [
             1, -1, -1,
@@ -128,6 +129,10 @@ class JaxDriver:
         self._cpu_temp_read_error_logged = False
         self._physical_imu_via_serial = bool(
             node.declare_parameter('physical_imu_via_serial', bool(self.is_physical)).value
+        )
+        self._imu_query_period_s = max(
+            float(node.declare_parameter('imu_query_period_s', 0.05).value),
+            self._loop_period,
         )
         self._imu_frame_id = str(
             node.declare_parameter('imu_frame_id', 'imu_link').value
@@ -329,9 +334,6 @@ class JaxDriver:
 
     def update_robot_mode(self, msg: String):
         mode = msg.data.strip().lower()
-        if mode == 'stand':
-            self.node.get_logger().info('Mode -> stand (handled by mode_manager)')
-            return
         if mode not in self._mode_map:
             self.node.get_logger().warn(f'Unknown mode: {mode}')
             return
@@ -509,6 +511,17 @@ class JaxDriver:
         self._last_battery_query_time = now
         self.serial_port.write(b'BAT?\n')
 
+    def _request_imu_sample(self):
+        if not self.serial_port or not self.serial_port.is_open:
+            return
+        if not (self.use_imu and self.is_physical and self._physical_imu_via_serial):
+            return
+        now = time.monotonic()
+        if (now - self._last_imu_query_time) < self._imu_query_period_s:
+            return
+        self._last_imu_query_time = now
+        self.serial_port.write(b'IMU?\n')
+
     def _publish_battery_voltage(self, raw_voltage: float):
         batt = BatteryState()
         batt.header.stamp = self.node.get_clock().now().to_msg()
@@ -661,6 +674,7 @@ class JaxDriver:
                     self.send_joint_angles_to_arduino(joint_angles)
 
                 self._request_battery_voltage()
+                self._request_imu_sample()
                 self._drain_serial_feedback()
                 self._publish_cpu_temperature()
 

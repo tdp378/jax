@@ -96,6 +96,11 @@
 
     # Physical robot IMU is expected over Arduino serial by default.
     physical_imu_via_serial: true
+    imu_query_period_s: 0.05
+
+    # Disable closed-loop body stabilization until the physical IMU frame/signs
+    # are aligned to the robot body; the IMU topic still publishes normally.
+    imu_stabilization_enabled: false
     imu_orientation_variance: 0.02
     imu_angular_velocity_variance: 0.03
     imu_linear_acceleration_variance: 0.2
