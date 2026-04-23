@@ -5,11 +5,15 @@ import math as m
 
 class Configuration:
     def __init__(self):
+        # Code-level controller defaults live here. The ROS driver may override
+        # selected values from driver.yaml at runtime, but this class remains the
+        # single source of fallback defaults for controller-facing tuning.
         #################### COMMANDS ####################
         self.max_x_velocity = 1.2
         self.max_y_velocity = 0.5
         self.max_yaw_rate = 2.0
         self.max_pitch = 30.0 * np.pi / 180.0
+        self.cmd_vel_timeout_s = 0.25
 
         #################### MOVEMENT PARAMS ####################
         self.z_time_constant = 0.02
@@ -21,6 +25,16 @@ class Configuration:
         self.yaw_time_constant = 0.3
         self.max_stance_yaw = 1.2
         self.max_stance_yaw_rate = 1
+        self.rest_tilt_deadband = 0.08
+        self.height_slider_deadband = 0.05
+        self.trot_linear_deadband = 0.05
+        self.trot_yaw_deadband = 0.05
+        self.trot_speed_slider_axis = 'angular.x'
+        self.trot_speed_min_scale = 0.00
+        self.trot_speed_max_scale = 1.00
+        self.trot_speed_slider_deadband = 0.03
+        self.trot_start_linear_threshold = 0.02
+        self.trot_start_yaw_threshold = 0.05
 
         #################### IMU STABILIZATION ####################
         # Body attitude controller gains (radians-based).
@@ -43,14 +57,14 @@ class Configuration:
         self.stabilize_compensation_limit = 0.12
 
         #################### STANCE ####################
-        self.delta_x = 0.117
+        self.default_stance_delta_x = 0.117
 
         # These x_shift variables will move the default foot positions of the robot
         # Handy if the centre of mass shifts as can move the feet to compensate
         self.rear_leg_x_shift = 0.00
         self.front_leg_x_shift = 0.00
 
-        self.delta_y = 0.1106
+        self.default_stance_delta_y = 0.1106
         self.default_z_ref = -0.25
 
         #################### SWING ######################
@@ -58,6 +72,7 @@ class Configuration:
         self.z_clearance = 0.07
         self.alpha = 0.5  # Ratio between touchdown distance and total horizontal stance movement
         self.beta = 0.5   # Ratio between touchdown distance and total horizontal stance movement
+        self.reverse_step_scale = 0.65
 
         #################### GAIT #######################
         self.dt = 0.01
@@ -106,17 +121,51 @@ class Configuration:
         self.LEG_INERTIA = (leg_x, leg_y, leg_z)
 
         ################### BEHAVIOR POSE OFFSETS ####################
-        # These are what the new mode-driven driver expects.
-        self.sit_x_offsets = np.array([-0.03, -0.03, 0.09, 0.09], dtype=float)
-        self.sit_y_offsets = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-        self.sit_z_offsets = np.array([-0.18, -0.18, -0.18, -0.18], dtype=float)
-
-        self.lay_x_offsets = np.array([-0.015, -0.015, 0.035, 0.035], dtype=float)
-        self.lay_y_offsets = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
-        self.lay_z_offsets = np.array([-0.24, -0.24, -0.24, -0.24], dtype=float)
-
         self.rest_x_offsets = np.zeros(4, dtype=float)
         self.rest_y_offsets = np.zeros(4, dtype=float)
+        self.rest_height_center = -0.17531
+        self.rest_height_min = self.rest_height_center - 0.06
+        self.rest_height_max = self.rest_height_center + 0.06
+        self.rest_max_roll = 0.20
+        self.rest_max_pitch = 0.20
+
+    # Runtime ROS parameter defaults grouped by purpose so the driver can
+    # declare overrides without duplicating controller fallback values.
+    def global_stance_parameter_defaults(self):
+        return {
+            'default_stance_delta_x': float(self.default_stance_delta_x),
+            'default_stance_delta_y': float(self.default_stance_delta_y),
+            'front_leg_x_shift': float(self.front_leg_x_shift),
+            'rear_leg_x_shift': float(self.rear_leg_x_shift),
+            'default_z_ref': float(self.default_z_ref),
+            'reverse_step_scale': float(self.reverse_step_scale),
+        }
+
+    def behavior_pose_parameter_defaults(self):
+        return {
+            'rest_x_offsets': self.rest_x_offsets.tolist(),
+            'rest_y_offsets': self.rest_y_offsets.tolist(),
+        }
+
+    def locomotion_parameter_defaults(self):
+        return {
+            'cmd_vel_timeout_s': float(self.cmd_vel_timeout_s),
+            'rest_height_center': float(self.rest_height_center),
+            'rest_height_min': float(self.rest_height_min),
+            'rest_height_max': float(self.rest_height_max),
+            'rest_max_roll': float(self.rest_max_roll),
+            'rest_max_pitch': float(self.rest_max_pitch),
+            'rest_tilt_deadband': float(self.rest_tilt_deadband),
+            'height_slider_deadband': float(self.height_slider_deadband),
+            'trot_linear_deadband': float(self.trot_linear_deadband),
+            'trot_yaw_deadband': float(self.trot_yaw_deadband),
+            'trot_speed_slider_axis': self.trot_speed_slider_axis,
+            'trot_speed_min_scale': float(self.trot_speed_min_scale),
+            'trot_speed_max_scale': float(self.trot_speed_max_scale),
+            'trot_speed_slider_deadband': float(self.trot_speed_slider_deadband),
+            'trot_start_linear_threshold': float(self.trot_start_linear_threshold),
+            'trot_start_yaw_threshold': float(self.trot_start_yaw_threshold),
+        }
 
     @property
     def default_stance(self):
@@ -124,16 +173,47 @@ class Configuration:
         return np.array(
             [
                 [
-                    self.delta_x + self.front_leg_x_shift,   # Front Right
-                    self.delta_x + self.front_leg_x_shift,   # Front Left
-                    -self.delta_x + self.rear_leg_x_shift,   # Back Right
-                    -self.delta_x + self.rear_leg_x_shift,   # Back Left
+                    self.default_stance_delta_x + self.front_leg_x_shift,   # Front Right
+                    self.default_stance_delta_x + self.front_leg_x_shift,   # Front Left
+                    -self.default_stance_delta_x + self.rear_leg_x_shift,   # Back Right
+                    -self.default_stance_delta_x + self.rear_leg_x_shift,   # Back Left
                 ],
-                [-self.delta_y, self.delta_y, -self.delta_y, self.delta_y],
+                [
+                    -self.default_stance_delta_y,
+                    self.default_stance_delta_y,
+                    -self.default_stance_delta_y,
+                    self.default_stance_delta_y,
+                ],
                 [0, 0, 0, 0],
             ],
             dtype=float,
         )
+
+    # Legacy aliases kept so older controller code can still refer to the
+    # pre-cleanup attribute names while runtime/YAML names stay consistent.
+    @property
+    def delta_x(self):
+        return self.default_stance_delta_x
+
+    @delta_x.setter
+    def delta_x(self, value):
+        self.default_stance_delta_x = value
+
+    @property
+    def delta_y(self):
+        return self.default_stance_delta_y
+
+    @delta_y.setter
+    def delta_y(self, value):
+        self.default_stance_delta_y = value
+
+    @property
+    def reverse_alpha_scale(self):
+        return self.reverse_step_scale
+
+    @reverse_alpha_scale.setter
+    def reverse_alpha_scale(self, value):
+        self.reverse_step_scale = value
 
     ################## SWING ###########################
     @property
@@ -179,16 +259,7 @@ class Configuration:
         return 2 * self.overlap_ticks + 2 * self.swing_ticks
 
     ########################### MODE POSES ####################
-    def set_behavior_pose_offsets(self, sit_x, sit_y, sit_z, lay_x, lay_y, lay_z,
-                                   rest_x=None, rest_y=None):
-        self.sit_x_offsets = np.array(sit_x, dtype=float)
-        self.sit_y_offsets = np.array(sit_y, dtype=float)
-        self.sit_z_offsets = np.array(sit_z, dtype=float)
-
-        self.lay_x_offsets = np.array(lay_x, dtype=float)
-        self.lay_y_offsets = np.array(lay_y, dtype=float)
-        self.lay_z_offsets = np.array(lay_z, dtype=float)
-
+    def set_behavior_pose_offsets(self, rest_x=None, rest_y=None):
         if rest_x is not None:
             self.rest_x_offsets = np.array(rest_x, dtype=float)
         if rest_y is not None:
@@ -200,22 +271,6 @@ class Configuration:
         stance[0, :] += self.rest_x_offsets
         stance[1, :] += self.rest_y_offsets
         stance[2, :] += self.default_z_ref
-        return stance
-
-    @property
-    def sit_stance(self):
-        stance = self.default_stance.copy()
-        stance[0, :] += self.sit_x_offsets
-        stance[1, :] += self.sit_y_offsets
-        stance[2, :] += self.sit_z_offsets
-        return stance
-
-    @property
-    def lay_stance(self):
-        stance = self.default_stance.copy()
-        stance[0, :] += self.lay_x_offsets
-        stance[1, :] += self.lay_y_offsets
-        stance[2, :] += self.lay_z_offsets
         return stance
 
 

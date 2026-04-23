@@ -1,5 +1,9 @@
 /**:
   ros__parameters:
+    # This file is the runtime tuning surface loaded by launch.
+    # Code-level fallback defaults live in jax_control/Config.py.
+
+    # ---------------- Servo Calibration ----------------
     # Final per-servo hardware calibration after IK.
     # Order: [FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
     #         RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf]
@@ -13,6 +17,7 @@
     # Use this for horn zero/calibration issues like foot pad not sitting flat.
     servo_offset_deg: [4.0, 0.0, -55.0, 4.0, 0.0, -55.0, -4.0, 0.0, -55.0, 5.0, 5.0, -55.0]
 
+    # ---------------- Stance Geometry ----------------
     # Global neutral stance used by IK-driven modes like rest and trot.
     # delta_x: front/back spread from body centerline.
     # Bigger value = front feet farther forward and rear feet farther back.
@@ -31,14 +36,12 @@
     # More negative = body lower. Less negative = body higher.
     default_z_ref: -0.20
 
-    sit_x_offsets: [-0.03, -0.03, 0.09, 0.09]
-    sit_y_offsets: [0.0, 0.0, 0.0, 0.0]
-    sit_z_offsets: [-0.18, -0.18, -0.18, -0.18]
+    # Reduce fore-aft swing touchdown distance only while walking backward.
+    # Smaller value = shorter reverse steps and less skipping.
+    reverse_step_scale: 0.65
 
-    lay_x_offsets: [-0.015, -0.015, 0.035, 0.035]
-    lay_y_offsets: [0.0, 0.0, 0.0, 0.0]
-    lay_z_offsets: [-0.24, -0.24, -0.24, -0.24]
-
+    # ---------------- Behavior Pose Offsets ----------------
+    # Pose offset order is: [front_right, front_left, rear_right, rear_left]
     # Rest tuning order is: [front_right, front_left, rear_right, rear_left]
     # x offsets move feet fore/aft in body space.
     # More positive = foot farther forward. More negative = foot farther back.
@@ -49,6 +52,7 @@
     # Negative pushes right legs farther right and left legs toward center.
     rest_y_offsets: [0.0, 0.0, 0.0, 0.0]
 
+    # ---------------- Locomotion Tuning ----------------
     # Rest body height in meters.
     # More negative = body lower. Less negative = body higher.
     rest_height_center: -0.17531
@@ -68,6 +72,23 @@
     # Ignore small height slider inputs to reduce jitter around neutral height.
     height_slider_deadband: 0.05
 
+    # Ignore small trot motion inputs so joystick or bridge noise does not creep.
+    trot_linear_deadband: 0.05
+    trot_yaw_deadband: 0.05
+
+    # Trot speed slider mapping.
+    # Set axis to 'none' to disable driver-side scaling and let the app own speed.
+    trot_speed_slider_axis: none
+    trot_speed_min_scale: 1.0
+    trot_speed_max_scale: 1.0
+    trot_speed_slider_deadband: 0.03
+
+    # Keep trot mode armed but hold REST stance until commanded motion exceeds
+    # these thresholds (after deadbands and speed scaling).
+    trot_start_linear_threshold: 0.02
+    trot_start_yaw_threshold: 0.05
+
+    # ---------------- Battery Telemetry ----------------
     # Battery telemetry tuning.
     # The Arduino only replies to BAT? requests, so the Pi polls it at this rate.
     battery_query_period_s: 0.10
@@ -76,6 +97,11 @@
     battery_voltage_scale: 0.78
     battery_voltage_offset: -1.0
 
+    # LCD battery smoothing. Smaller window = faster update.
+    battery_filter_window: 6
+    battery_jump_threshold: 0.75
+
+    # ---------------- CPU Telemetry ----------------
     # CPU telemetry tuning.
     # Reads Raspberry Pi CPU temperature from sysfs and publishes sensor_msgs/Temperature.
     cpu_temp_enabled: true
@@ -85,10 +111,7 @@
     cpu_temp_publish_period_s: 1.0
     cpu_temp_variance_c: 0.0
 
-    # LCD battery smoothing. Smaller window = faster update.
-    battery_filter_window: 6
-    battery_jump_threshold: 0.75
-
+    # ---------------- IMU Routing ----------------
     # IMU topic selection.
     # Simulation publishes to /jax/imu; physical hardware should publish to /imu/data.
     sim_imu_topic: /jax/imu
@@ -98,6 +121,7 @@
     physical_imu_via_serial: true
     imu_query_period_s: 0.05
 
+    # ---------------- IMU Stabilization ----------------
     # Disable closed-loop body stabilization until the physical IMU frame/signs
     # are aligned to the robot body; the IMU topic still publishes normally.
     imu_stabilization_enabled: false
@@ -105,6 +129,7 @@
     imu_angular_velocity_variance: 0.03
     imu_linear_acceleration_variance: 0.2
 
+    # ---------------- Direct I2C IMU ----------------
     # Direct Pi-side BNO08x I2C settings, used only when use_direct_i2c_imu:=1.
     imu_frame_id: imu_link
     imu_publish_hz: 50.0

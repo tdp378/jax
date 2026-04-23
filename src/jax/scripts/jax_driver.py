@@ -71,6 +71,7 @@ class JaxDriver:
         self.latest_mode = RobotMode.REST
         self.rest_recenter_pending = False
         self._imu_sub = None
+        self.config = Configuration()
 
         self.desired_mode_topic = '/jax_mode'
         self.filtered_cmd_vel_topic = '/cmd_vel'
@@ -84,15 +85,23 @@ class JaxDriver:
             node.declare_parameter('battery_query_period_s', 0.10).value
         )
         self._cmd_vel_timeout_s = max(
-            float(node.declare_parameter('cmd_vel_timeout_s', 0.25).value),
+            float(node.declare_parameter('cmd_vel_timeout_s', self.config.cmd_vel_timeout_s).value),
             self._loop_period,
         )
         self._rest_tilt_deadband = max(
-            float(node.declare_parameter('rest_tilt_deadband', 0.08).value),
+            float(node.declare_parameter('rest_tilt_deadband', self.config.rest_tilt_deadband).value),
             0.0,
         )
         self._height_slider_deadband = max(
-            float(node.declare_parameter('height_slider_deadband', 0.05).value),
+            float(node.declare_parameter('height_slider_deadband', self.config.height_slider_deadband).value),
+            0.0,
+        )
+        self._trot_linear_deadband = max(
+            float(node.declare_parameter('trot_linear_deadband', self.config.trot_linear_deadband).value),
+            0.0,
+        )
+        self._trot_yaw_deadband = max(
+            float(node.declare_parameter('trot_yaw_deadband', self.config.trot_yaw_deadband).value),
             0.0,
         )
         self._battery_voltage_scale = float(
@@ -161,7 +170,6 @@ class JaxDriver:
             )
             self._imu_pub = node.create_publisher(Imu, physical_imu_topic, 10)
 
-        self.config = Configuration()
         self._declare_behavior_pose_parameters()
         self._declare_global_stance_parameters()
 
@@ -192,33 +200,57 @@ class JaxDriver:
         self._apply_global_stance_parameters()
         self._apply_behavior_pose_parameters()
 
+        locomotion_defaults = self.config.locomotion_parameter_defaults()
+
         self.rest_height_center = node.declare_parameter(
             'rest_height_center',
-            -0.17531
+            locomotion_defaults['rest_height_center']
         ).value
         self.rest_height_min = node.declare_parameter(
             'rest_height_min',
-            self.rest_height_center - 0.06
+            locomotion_defaults['rest_height_min']
         ).value
         self.rest_height_max = node.declare_parameter(
             'rest_height_max',
-            self.rest_height_center + 0.06
+            locomotion_defaults['rest_height_max']
         ).value
 
-        self.rest_max_roll = float(node.declare_parameter('rest_max_roll', 0.20).value)
-        self.rest_max_pitch = float(node.declare_parameter('rest_max_pitch', 0.20).value)
+        self.rest_max_roll = float(node.declare_parameter(
+            'rest_max_roll', locomotion_defaults['rest_max_roll']
+        ).value)
+        self.rest_max_pitch = float(node.declare_parameter(
+            'rest_max_pitch', locomotion_defaults['rest_max_pitch']
+        ).value)
 
         self.trot_speed_slider_axis = str(
-            node.declare_parameter('trot_speed_slider_axis', 'angular.x').value
+            node.declare_parameter(
+                'trot_speed_slider_axis', locomotion_defaults['trot_speed_slider_axis']
+            ).value
         ).strip().lower()
         self.trot_speed_min_scale = float(
-            node.declare_parameter('trot_speed_min_scale', 0.20).value
+            node.declare_parameter(
+                'trot_speed_min_scale', locomotion_defaults['trot_speed_min_scale']
+            ).value
         )
         self.trot_speed_max_scale = float(
-            node.declare_parameter('trot_speed_max_scale', 1.00).value
+            node.declare_parameter(
+                'trot_speed_max_scale', locomotion_defaults['trot_speed_max_scale']
+            ).value
         )
         self.trot_speed_slider_deadband = float(
-            node.declare_parameter('trot_speed_slider_deadband', 0.03).value
+            node.declare_parameter(
+                'trot_speed_slider_deadband', locomotion_defaults['trot_speed_slider_deadband']
+            ).value
+        )
+        self.trot_start_linear_threshold = float(
+            node.declare_parameter(
+                'trot_start_linear_threshold', locomotion_defaults['trot_start_linear_threshold']
+            ).value
+        )
+        self.trot_start_yaw_threshold = float(
+            node.declare_parameter(
+                'trot_start_yaw_threshold', locomotion_defaults['trot_start_yaw_threshold']
+            ).value
         )
 
         if self.trot_speed_min_scale > self.trot_speed_max_scale:
@@ -285,34 +317,20 @@ class JaxDriver:
         )
 
     def _declare_global_stance_parameters(self):
-        defaults = {
-            'default_stance_delta_x': float(self.config.delta_x),
-            'default_stance_delta_y': float(self.config.delta_y),
-            'front_leg_x_shift': float(self.config.front_leg_x_shift),
-            'rear_leg_x_shift': float(self.config.rear_leg_x_shift),
-            'default_z_ref': float(self.config.default_z_ref),
-        }
+        defaults = self.config.global_stance_parameter_defaults()
         for name, default in defaults.items():
             self.node.declare_parameter(name, default)
 
     def _apply_global_stance_parameters(self):
-        self.config.delta_x = float(self.node.get_parameter('default_stance_delta_x').value)
-        self.config.delta_y = float(self.node.get_parameter('default_stance_delta_y').value)
+        self.config.default_stance_delta_x = float(self.node.get_parameter('default_stance_delta_x').value)
+        self.config.default_stance_delta_y = float(self.node.get_parameter('default_stance_delta_y').value)
         self.config.front_leg_x_shift = float(self.node.get_parameter('front_leg_x_shift').value)
         self.config.rear_leg_x_shift = float(self.node.get_parameter('rear_leg_x_shift').value)
         self.config.default_z_ref = float(self.node.get_parameter('default_z_ref').value)
+        self.config.reverse_step_scale = float(self.node.get_parameter('reverse_step_scale').value)
 
     def _declare_behavior_pose_parameters(self):
-        defaults = {
-            'sit_x_offsets': [-0.03, -0.03, 0.09, 0.09],
-            'sit_y_offsets': [0.0, 0.0, 0.0, 0.0],
-            'sit_z_offsets': [-0.18, -0.18, -0.18, -0.18],
-            'lay_x_offsets': [-0.015, -0.015, 0.035, 0.035],
-            'lay_y_offsets': [0.0, 0.0, 0.0, 0.0],
-            'lay_z_offsets': [-0.24, -0.24, -0.24, -0.24],
-            'rest_x_offsets': [-0.010774, -0.010774, 0.0, 0.0],
-            'rest_y_offsets': [0.0, 0.0, 0.0, 0.0],
-        }
+        defaults = self.config.behavior_pose_parameter_defaults()
         for name, default in defaults.items():
             self.node.declare_parameter(name, default)
 
@@ -321,12 +339,6 @@ class JaxDriver:
 
     def _apply_behavior_pose_parameters(self):
         self.config.set_behavior_pose_offsets(
-            sit_x=self._param_vec('sit_x_offsets'),
-            sit_y=self._param_vec('sit_y_offsets'),
-            sit_z=self._param_vec('sit_z_offsets'),
-            lay_x=self._param_vec('lay_x_offsets'),
-            lay_y=self._param_vec('lay_y_offsets'),
-            lay_z=self._param_vec('lay_z_offsets'),
             rest_x=self._param_vec('rest_x_offsets'),
             rest_y=self._param_vec('rest_y_offsets'),
         )
@@ -401,46 +413,65 @@ class JaxDriver:
         yaw = math.atan2(siny_cosp, cosy_cosp)
         self.state.euler_orientation = [yaw, pitch, roll]
 
-    def _get_twist_axis_value(self, axis_name: str) -> float:
+    def _get_twist_axis_value(self, axis_name: str, cmd_vel: Optional[Twist] = None) -> float:
+        twist = cmd_vel if cmd_vel is not None else self.latest_cmd_vel
         if axis_name == 'linear.x':
-            return float(self.latest_cmd_vel.linear.x)
+            return float(twist.linear.x)
         if axis_name == 'linear.y':
-            return float(self.latest_cmd_vel.linear.y)
+            return float(twist.linear.y)
         if axis_name == 'linear.z':
-            return float(self.latest_cmd_vel.linear.z)
+            return float(twist.linear.z)
         if axis_name == 'angular.x':
-            return float(self.latest_cmd_vel.angular.x)
+            return float(twist.angular.x)
         if axis_name == 'angular.y':
-            return float(self.latest_cmd_vel.angular.y)
+            return float(twist.angular.y)
         if axis_name == 'angular.z':
-            return float(self.latest_cmd_vel.angular.z)
+            return float(twist.angular.z)
         return 0.0
 
-    def _get_trot_speed_scale(self) -> float:
+    def _get_trot_speed_scale(self, cmd_vel: Optional[Twist] = None) -> float:
         if self.trot_speed_slider_axis == 'none':
             return 1.0
-        raw = float(np.clip(self._get_twist_axis_value(self.trot_speed_slider_axis), -1.0, 1.0))
+        raw = float(np.clip(self._get_twist_axis_value(self.trot_speed_slider_axis, cmd_vel), -1.0, 1.0))
         if abs(raw) < self.trot_speed_slider_deadband:
             raw = 0.0
 
-        normalized = 0.5 * (raw + 1.0)
+        # Centered slider should correspond to minimum speed; both directions
+        # increase speed magnitude.
+        normalized = abs(raw)
         scale = self.trot_speed_min_scale + normalized * (
             self.trot_speed_max_scale - self.trot_speed_min_scale
         )
         return float(np.clip(scale, self.trot_speed_min_scale, self.trot_speed_max_scale))
+
+    def _has_trot_motion_intent(self, cmd_vel: Twist) -> bool:
+        vx = self._apply_deadband(float(cmd_vel.linear.x), self._trot_linear_deadband)
+        vy = self._apply_deadband(float(cmd_vel.linear.y), self._trot_linear_deadband)
+        yaw = self._apply_deadband(float(cmd_vel.angular.z), self._trot_yaw_deadband)
+
+        speed_scale = self._get_trot_speed_scale(cmd_vel)
+        vx *= speed_scale
+        vy *= speed_scale
+        yaw *= speed_scale
+
+        linear_mag = float(np.hypot(vx, vy))
+        return (
+            linear_mag > self.trot_start_linear_threshold
+            or abs(yaw) > self.trot_start_yaw_threshold
+        )
 
     def build_command(self):
         cmd_vel = self._get_fresh_cmd_vel()
 
         command = Command()
         command.horizontal_velocity = np.array([
-            cmd_vel.linear.x,
-            cmd_vel.linear.y,
+            self._apply_deadband(float(cmd_vel.linear.x), self._trot_linear_deadband),
+            self._apply_deadband(float(cmd_vel.linear.y), self._trot_linear_deadband),
         ])
-        command.yaw_rate = cmd_vel.angular.z
+        command.yaw_rate = self._apply_deadband(float(cmd_vel.angular.z), self._trot_yaw_deadband)
 
         if self.latest_mode == RobotMode.TROT:
-            speed_scale = self._get_trot_speed_scale()
+            speed_scale = self._get_trot_speed_scale(cmd_vel)
             command.horizontal_velocity *= speed_scale
             command.yaw_rate *= speed_scale
             self.state.speed_factor = speed_scale
@@ -489,17 +520,15 @@ class JaxDriver:
 
     def apply_mode(self):
         if self.latest_mode == RobotMode.TROT:
-            if self.state.behavior_state in (BehaviorState.SIT, BehaviorState.LAY):
-                self.state.behavior_state = BehaviorState.REST
-                self.rest_recenter_pending = True
-            else:
+            cmd_vel = self._get_fresh_cmd_vel()
+            if self._has_trot_motion_intent(cmd_vel):
                 self.state.behavior_state = BehaviorState.TROT
+            else:
+                self.state.behavior_state = BehaviorState.REST
         elif self.latest_mode == RobotMode.REST:
             self.state.behavior_state = BehaviorState.REST
-        elif self.latest_mode == RobotMode.SIT:
-            self.state.behavior_state = BehaviorState.SIT
-        elif self.latest_mode == RobotMode.LAY:
-            self.state.behavior_state = BehaviorState.LAY
+        elif self.latest_mode in (RobotMode.SIT, RobotMode.LAY):
+            self.state.behavior_state = BehaviorState.REST
 
     def _request_battery_voltage(self):
         if not self.serial_port or not self.serial_port.is_open:

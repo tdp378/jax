@@ -158,12 +158,6 @@ class JaxDriver:
 
     def _declare_behavior_pose_parameters(self):
         defaults = {
-            'sit_x_offsets': [-0.03, -0.03, 0.09, 0.09],
-            'sit_y_offsets': [0.0, 0.0, 0.0, 0.0],
-            'sit_z_offsets': [-0.18, -0.18, -0.18, -0.18],
-            'lay_x_offsets': [-0.015, -0.015, 0.035, 0.035],
-            'lay_y_offsets': [0.0, 0.0, 0.0, 0.0],
-            'lay_z_offsets': [-0.24, -0.24, -0.24, -0.24],
             'rest_x_offsets': [-0.010774, -0.010774, 0.0, 0.0],
             'rest_y_offsets': [0.0, 0.0, 0.0, 0.0],
         }
@@ -176,12 +170,6 @@ class JaxDriver:
 
     def _apply_behavior_pose_parameters(self):
         self.config.set_behavior_pose_offsets(
-            sit_x=self._param_vec('sit_x_offsets'),
-            sit_y=self._param_vec('sit_y_offsets'),
-            sit_z=self._param_vec('sit_z_offsets'),
-            lay_x=self._param_vec('lay_x_offsets'),
-            lay_y=self._param_vec('lay_y_offsets'),
-            lay_z=self._param_vec('lay_z_offsets'),
             rest_x=self._param_vec('rest_x_offsets'),
             rest_y=self._param_vec('rest_y_offsets'),
         )
@@ -340,20 +328,11 @@ class JaxDriver:
 
     def apply_mode(self):
         if self.latest_mode == RobotMode.TROT:
-            # Transitioning from static poses directly into gait can leave the
-            # planner in a poor foot-state seed. Re-enter REST for one cycle,
-            # then switch to TROT on the next loop.
-            if self.state.behavior_state in (BehaviorState.SIT, BehaviorState.LAY):
-                self.state.behavior_state = BehaviorState.REST
-                self.rest_recenter_pending = True
-            else:
-                self.state.behavior_state = BehaviorState.TROT
+            self.state.behavior_state = BehaviorState.TROT
         elif self.latest_mode == RobotMode.REST:
             self.state.behavior_state = BehaviorState.REST
-        elif self.latest_mode == RobotMode.SIT:
-            self.state.behavior_state = BehaviorState.SIT
-        elif self.latest_mode == RobotMode.LAY:
-            self.state.behavior_state = BehaviorState.LAY
+        elif self.latest_mode in (RobotMode.SIT, RobotMode.LAY):
+            self.state.behavior_state = BehaviorState.REST
 
     def run(self):
         while rclpy.ok():

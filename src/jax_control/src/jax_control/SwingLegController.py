@@ -5,6 +5,12 @@ class SwingController:
     def __init__(self, config):
         self.config = config
 
+    def _touchdown_velocity(self, command):
+        touchdown_velocity = np.array(command.horizontal_velocity, dtype=float)
+        if touchdown_velocity[0] < 0.0:
+            touchdown_velocity[0] *= max(0.0, self.config.reverse_step_scale)
+        return touchdown_velocity
+
     def raibert_touchdown_location(
         self, leg_index, command
     ):
@@ -12,7 +18,7 @@ class SwingController:
             self.config.alpha
             * self.config.stance_ticks
             * self.config.dt
-            * command.horizontal_velocity
+            * self._touchdown_velocity(command)
         )
         delta_p = np.array([delta_p_2d[0], delta_p_2d[1], 0])
         theta = (

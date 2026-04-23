@@ -209,12 +209,6 @@ class Controller:
             state.joint_angles = self.inverse_kinematics(rotated_foot_locations, self.config)
             state.rotated_foot_locations = rotated_foot_locations
 
-        elif state.behavior_state == BehaviorState.SIT:
-            self._apply_pose(state, self.config.sit_stance, state.euler_orientation, stabilise=False)
-
-        elif state.behavior_state == BehaviorState.LAY:
-            self._apply_pose(state, self.config.lay_stance, state.euler_orientation, stabilise=False)
-
         state.ticks += 1
         state.pitch = command.pitch
         state.roll = command.roll

@@ -19,6 +19,11 @@ JOINT_STATES_TOPIC = '/joint_states'
 TRANSITION_STEPS = 50
 
 
+def smoothstep(alpha: float) -> float:
+    alpha = max(0.0, min(1.0, alpha))
+    return alpha * alpha * (3.0 - 2.0 * alpha)
+
+
 class JaxModeManager(Node):
     def __init__(self):
         super().__init__('mode_manager')
@@ -192,13 +197,15 @@ class JaxModeManager(Node):
 
             if (
                 self.pending_dynamic_mode is not None
-                and self.target_pose is None
                 and self.latest_driver_mode == self.pending_dynamic_mode
             ):
+                # Keep target pose fresh during static->dynamic interpolation so
+                # the final handoff does not jump to a stale gait sample.
                 self.target_pose = list(msg.data)
-                self.get_logger().info(
-                    f"Captured live target for transition to: {self.pending_dynamic_mode}"
-                )
+                if self.step_count == 0:
+                    self.get_logger().info(
+                        f"Captured live target for transition to: {self.pending_dynamic_mode}"
+                    )
 
         if self.current_mode in self.dynamic_modes and self.pending_dynamic_mode is None:
             self.cmd_pub.publish(msg)
@@ -224,9 +231,10 @@ class JaxModeManager(Node):
         if self.step_count < self.transition_steps:
             self.step_count += 1
             alpha = self.step_count / float(self.transition_steps)
+            eased_alpha = smoothstep(alpha)
 
             new_angles = [
-                self.current_pose[i] + (self.target_pose[i] - self.current_pose[i]) * alpha
+                self.current_pose[i] + (self.target_pose[i] - self.current_pose[i]) * eased_alpha
                 for i in range(len(self.joint_names))
             ]
 
