@@ -27,6 +27,9 @@ def generate_launch_description():
 
     world_path = os.path.join(jax_gazebo_share, 'launch', 'world', 'normal.world')
     ctrl_yaml_path = os.path.join(jax_gazebo_share, 'config', 'jax_gz_ros2_control.yaml')
+    driver_yaml_path = os.path.join(
+        get_package_share_directory('jax'), 'config', 'driver.yaml'
+    )
 
     robot_description_path = os.path.join(desc_share, 'urdf', 'jax.urdf')
     robot_description_config = xacro.process_file(robot_description_path)
@@ -64,6 +67,8 @@ def generate_launch_description():
     spawn_delay = LaunchConfiguration('spawn_delay')
     controller_startup_seconds = LaunchConfiguration('controller_startup_seconds')
     jax_stack_startup_seconds = LaunchConfiguration('jax_stack_startup_seconds')
+    keyboard_startup_seconds = LaunchConfiguration('keyboard_startup_seconds')
+    use_keyboard = LaunchConfiguration('use_keyboard')
 
     # -----------------------------
     # Gazebo
@@ -214,11 +219,12 @@ def generate_launch_description():
         output='screen',
         arguments=['1', '0', use_imu],
         parameters=[
+            driver_yaml_path,
             {
                 'use_sim_time': True,
                 'gz_leg_command_topic': '/jax/trot_joint_commands',
             },
-                   ],
+        ],
     )
 
     jax_mode_manager = Node(
@@ -231,6 +237,27 @@ def generate_launch_description():
                 'use_sim_time': True,
             }
         ],
+    )
+
+    keyboard_cmd_mode = ExecuteProcess(
+        cmd=[
+            'bash',
+            '-lc',
+            "run_cmd='ros2 run jax keyboard_cmd_mode.py'; "
+            "if [[ -n \"${DISPLAY:-}\" ]]; then "
+            "  if command -v gnome-terminal >/dev/null 2>&1; then "
+            "    exec gnome-terminal -- bash -lc \"$run_cmd; exec bash\"; "
+            "  elif command -v x-terminal-emulator >/dev/null 2>&1; then "
+            "    exec x-terminal-emulator -T jax_keyboard -e bash -lc \"$run_cmd; exec bash\"; "
+            "  elif command -v xterm >/dev/null 2>&1; then "
+            "    exec xterm -T jax_keyboard -e bash -lc \"$run_cmd; exec bash\"; "
+            "  fi; "
+            "fi; "
+            "echo '[simulation.launch] No GUI terminal available, running keyboard node in launch process.'; "
+            "exec $run_cmd"
+        ],
+        output='screen',
+        condition=IfCondition(use_keyboard),
     )
 
     mock_peripherals = Node(
@@ -408,6 +435,19 @@ def generate_launch_description():
                 'Set later than controller startup so the controller is ready first.'
             ),
         ),
+        DeclareLaunchArgument(
+            'use_keyboard',
+            default_value='1',
+            description=(
+                'Start keyboard teleop automatically. When a GUI terminal is available, '
+                'it opens in a separate terminal window.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'keyboard_startup_seconds',
+            default_value='11.0',
+            description='Seconds after launch to start keyboard teleop.',
+        ),
 
         AppendEnvironmentVariable(
             name='GZ_SIM_RESOURCE_PATH',
@@ -438,6 +478,10 @@ def generate_launch_description():
         TimerAction(
             period=jax_stack_startup_seconds,
             actions=[jax_driver, jax_mode_manager],
+        ),
+        TimerAction(
+            period=keyboard_startup_seconds,
+            actions=[keyboard_cmd_mode],
         ),
 
         gz_sim,
