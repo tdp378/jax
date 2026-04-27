@@ -11,7 +11,7 @@
     servo_direction: [1, -1, -1, 1, -1, -1, -1, -1, -1, -1, -1, -1]
 
     # Reorder logical joints into physical Arduino channel order if needed.
-    servo_order: [0, 2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    servo_order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
     # Final degree trim applied after direction and +90 conversion.
     # Use this for horn zero/calibration issues like foot pad not sitting flat.
@@ -96,6 +96,11 @@
     # Final battery calibration: published_voltage = raw_voltage * scale + offset
     battery_voltage_scale: 0.78
     battery_voltage_offset: -1.0
+
+    # Display battery mapping and low-battery warning thresholds.
+    battery_voltage_full: 16.8
+    battery_voltage_empty: 13.6
+    low_battery_threshold: 14.0
 
     # LCD battery smoothing. Smaller window = faster update.
     battery_filter_window: 6
