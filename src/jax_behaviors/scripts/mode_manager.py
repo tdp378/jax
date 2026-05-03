@@ -118,6 +118,10 @@ class JaxModeManager(Node):
     def mode_callback(self, msg):
         mode = msg.data.lower().strip()
 
+        # App compatibility: treat 'walk' as trot.
+        if mode == 'walk':
+            mode = 'trot'
+
         if mode not in self.valid_modes:
             self.get_logger().warn(
                 f"Mode '{mode}' is not valid. Valid modes: {sorted(self.valid_modes)}"

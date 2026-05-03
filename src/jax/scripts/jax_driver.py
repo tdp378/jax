@@ -65,6 +65,7 @@ class JaxDriver:
         self._i2c_read_len = 64
         self._i2c_protocol = 'binary_v1'
         self._warned_i2c_imu_unsupported = False
+        self._last_i2c_error_log_time = 0.0
 
         self._servo_direction_defaults = [
             1, -1, -1,
@@ -193,6 +194,9 @@ class JaxDriver:
         self._i2c_protocol = str(
             node.declare_parameter('arduino_i2c_protocol', 'binary_v1').value
         ).strip().lower()
+        self._i2c_use_rdwr = bool(
+            node.declare_parameter('arduino_i2c_use_rdwr', False).value
+        )
 
         self._imu_query_period_s = max(
             float(node.declare_parameter('imu_query_period_s', 0.05).value),
@@ -841,30 +845,59 @@ class JaxDriver:
         if self._i2c_bus is None or not data:
             return
 
-        if i2c_msg is not None:
-            self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, list(data)))
-            return
+        def _log_i2c_error_once_per_sec(message: str):
+            now = time.monotonic()
+            if (now - self._last_i2c_error_log_time) >= 1.0:
+                self.node.get_logger().warn(message)
+                self._last_i2c_error_log_time = now
 
-        if len(data) == 1:
-            self._i2c_bus.write_byte(self._i2c_address, int(data[0]))
-            return
+        if self._i2c_use_rdwr and i2c_msg is not None:
+            try:
+                self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, list(data)))
+                return
+            except OSError as exc:
+                _log_i2c_error_once_per_sec(
+                    f'I2C i2c_rdwr write failed (will fallback to SMBus block): {exc}'
+                )
 
-        self._i2c_bus.write_i2c_block_data(
-            self._i2c_address,
-            int(data[0]),
-            [int(b) for b in data[1:]],
-        )
+        try:
+            if len(data) == 1:
+                self._i2c_bus.write_byte(self._i2c_address, int(data[0]))
+                return
+
+            self._i2c_bus.write_i2c_block_data(
+                self._i2c_address,
+                int(data[0]),
+                [int(b) for b in data[1:]],
+            )
+        except OSError as exc:
+            _log_i2c_error_once_per_sec(f'I2C SMBus write failed: {exc}')
 
     def _i2c_read_bytes(self, count: int):
         if self._i2c_bus is None or count <= 0:
             return b''
 
-        if i2c_msg is not None:
-            msg = i2c_msg.read(self._i2c_address, count)
-            self._i2c_bus.i2c_rdwr(msg)
-            return bytes(msg)
+        if self._i2c_use_rdwr and i2c_msg is not None:
+            try:
+                msg = i2c_msg.read(self._i2c_address, count)
+                self._i2c_bus.i2c_rdwr(msg)
+                return bytes(msg)
+            except OSError as exc:
+                now = time.monotonic()
+                if (now - self._last_i2c_error_log_time) >= 1.0:
+                    self.node.get_logger().warn(
+                        f'I2C i2c_rdwr read failed (will fallback to byte reads): {exc}'
+                    )
+                    self._last_i2c_error_log_time = now
 
-        return bytes(self._i2c_bus.read_byte(self._i2c_address) for _ in range(count))
+        try:
+            return bytes(self._i2c_bus.read_byte(self._i2c_address) for _ in range(count))
+        except OSError as exc:
+            now = time.monotonic()
+            if (now - self._last_i2c_error_log_time) >= 1.0:
+                self.node.get_logger().warn(f'I2C byte read failed: {exc}')
+                self._last_i2c_error_log_time = now
+            return b''
 
     def _write_i2c_servo_angles_binary_v1(self, deg_angles):
         if self._i2c_bus is None:
