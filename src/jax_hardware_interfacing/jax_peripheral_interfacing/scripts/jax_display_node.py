@@ -54,6 +54,14 @@ class DesktopDisplayBackend:
     def close(self):
         cv2.destroyAllWindows()
 
+
+class HeadlessDisplayBackend:
+    def show(self, img_bgr: np.ndarray):
+        return
+
+    def close(self):
+        return
+
 class WaveshareDisplayBackend:
     def __init__(self, spi_port=0, spi_device=0, dc_pin=25, rst_pin=27):
         serial = spi(port=spi_port, device=spi_device, gpio_DC=dc_pin, gpio_RST=rst_pin)
@@ -160,6 +168,7 @@ class JaxDisplayNode(Node):
         # ---------------- Backend ----------------
         on_pi = (os.path.exists("/dev/spidev0.0")
                  and platform.machine() in ["aarch64", "armv7l"])
+        has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         use_lcd = self.get_parameter("use_lcd").value
 
         if (use_lcd or on_pi) and _HAS_LUMA:
@@ -169,8 +178,11 @@ class JaxDisplayNode(Node):
                 dc_pin=self.get_parameter("dc_pin").value,
                 rst_pin=self.get_parameter("rst_pin").value,
             )
-        else:
+        elif has_display:
             self.backend = DesktopDisplayBackend()
+        else:
+            self.get_logger().info("No display server detected; using headless display backend")
+            self.backend = HeadlessDisplayBackend()
 
         self.timer = self.create_timer(
             1.0 / self.get_parameter("refresh_hz").value, self.update)

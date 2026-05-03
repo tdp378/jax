@@ -19,6 +19,11 @@ try:
 except ImportError:
     SMBus = None
     i2c_msg = None
+
+try:
+    import smbus
+except ImportError:
+    smbus = None
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
@@ -331,11 +336,14 @@ class JaxDriver:
                     f'Serial connection to Arduino established on {self._serial_port_name}.'
                 )
             elif self._transport == 'i2c':
-                if SMBus is None or i2c_msg is None:
+                if SMBus is not None:
+                    self._i2c_bus = SMBus(self._i2c_bus_id)
+                elif smbus is not None:
+                    self._i2c_bus = smbus.SMBus(self._i2c_bus_id)
+                else:
                     raise RuntimeError(
-                        'smbus2 is required for arduino_transport=i2c but is not installed'
+                        'I2C transport requires python smbus2 or smbus module, but neither is installed'
                     )
-                self._i2c_bus = SMBus(self._i2c_bus_id)
                 self.node.get_logger().info(
                     f'I2C connection to Arduino established on bus {self._i2c_bus_id} '
                     f'address 0x{self._i2c_address:02X}.'
@@ -826,9 +834,37 @@ class JaxDriver:
             data = payload.encode('ascii', errors='ignore')
             max_chunk = 28
             for idx in range(0, len(data), max_chunk):
-                chunk = list(data[idx:idx + max_chunk])
-                self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, chunk))
+                self._i2c_write_bytes(data[idx:idx + max_chunk])
             return
+
+    def _i2c_write_bytes(self, data: bytes):
+        if self._i2c_bus is None or not data:
+            return
+
+        if i2c_msg is not None:
+            self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, list(data)))
+            return
+
+        if len(data) == 1:
+            self._i2c_bus.write_byte(self._i2c_address, int(data[0]))
+            return
+
+        self._i2c_bus.write_i2c_block_data(
+            self._i2c_address,
+            int(data[0]),
+            [int(b) for b in data[1:]],
+        )
+
+    def _i2c_read_bytes(self, count: int):
+        if self._i2c_bus is None or count <= 0:
+            return b''
+
+        if i2c_msg is not None:
+            msg = i2c_msg.read(self._i2c_address, count)
+            self._i2c_bus.i2c_rdwr(msg)
+            return bytes(msg)
+
+        return bytes(self._i2c_bus.read_byte(self._i2c_address) for _ in range(count))
 
     def _write_i2c_servo_angles_binary_v1(self, deg_angles):
         if self._i2c_bus is None:
@@ -838,15 +874,13 @@ class JaxDriver:
         for angle in deg_angles:
             packed.append(int(max(0, min(180, round(angle)))))
 
-        self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, packed))
+        self._i2c_write_bytes(bytes(packed))
 
     def _read_i2c_battery_voltage(self):
         if self._i2c_bus is None:
             return None
 
-        msg = i2c_msg.read(self._i2c_address, 2)
-        self._i2c_bus.i2c_rdwr(msg)
-        raw = bytes(msg)
+        raw = self._i2c_read_bytes(2)
         if len(raw) != 2:
             return None
 
@@ -856,9 +890,8 @@ class JaxDriver:
     def _read_i2c_line(self):
         if self._i2c_bus is None:
             return ''
-        msg = i2c_msg.read(self._i2c_address, self._i2c_read_len)
-        self._i2c_bus.i2c_rdwr(msg)
-        text = bytes(msg).decode('utf-8', errors='ignore')
+        raw = self._i2c_read_bytes(self._i2c_read_len)
+        text = raw.decode('utf-8', errors='ignore')
         return text.replace('\x00', '').strip()
 
     def _handle_feedback_line(self, line: str):
