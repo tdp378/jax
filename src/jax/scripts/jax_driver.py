@@ -9,7 +9,16 @@ from typing import Optional
 
 import numpy as np
 import rclpy
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None
+
+try:
+    from smbus2 import SMBus, i2c_msg
+except ImportError:
+    SMBus = None
+    i2c_msg = None
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
@@ -45,6 +54,12 @@ class JaxDriver:
         self._latest_mode_manager_joint_angles = None
         self._last_battery_query_time = 0.0
         self._last_imu_query_time = 0.0
+        self._transport = 'serial'
+        self._i2c_bus = None
+        self._i2c_address = 0x08
+        self._i2c_read_len = 64
+        self._i2c_protocol = 'binary_v1'
+        self._warned_i2c_imu_unsupported = False
 
         self._servo_direction_defaults = [
             1, -1, -1,
@@ -135,9 +150,45 @@ class JaxDriver:
         )
         self._last_cpu_temp_publish_time = 0.0
         self._cpu_temp_read_error_logged = False
-        self._physical_imu_via_serial = bool(
+        legacy_physical_imu_via_serial = bool(
             node.declare_parameter('physical_imu_via_serial', bool(self.is_physical)).value
         )
+        self._physical_imu_via_arduino = bool(
+            node.declare_parameter('physical_imu_via_arduino', legacy_physical_imu_via_serial).value
+        )
+        self._transport = str(
+            node.declare_parameter('arduino_transport', 'serial').value
+        ).strip().lower()
+        if self._transport not in {'serial', 'i2c'}:
+            self.node.get_logger().warn(
+                f"Unsupported arduino_transport '{self._transport}', defaulting to serial"
+            )
+            self._transport = 'serial'
+
+        self._serial_port_name = str(
+            node.declare_parameter('arduino_serial_port', '/dev/ttyAMA0').value
+        )
+        self._serial_baud = int(
+            node.declare_parameter('arduino_serial_baud', 115200).value
+        )
+        self._serial_timeout = float(
+            node.declare_parameter('arduino_serial_timeout_s', 0.02).value
+        )
+
+        self._i2c_bus_id = int(
+            node.declare_parameter('arduino_i2c_bus', 1).value
+        )
+        self._i2c_address = int(
+            node.declare_parameter('arduino_i2c_address', 8).value
+        )
+        self._i2c_read_len = max(
+            8,
+            int(node.declare_parameter('arduino_i2c_read_len', 64).value),
+        )
+        self._i2c_protocol = str(
+            node.declare_parameter('arduino_i2c_protocol', 'binary_v1').value
+        ).strip().lower()
+
         self._imu_query_period_s = max(
             float(node.declare_parameter('imu_query_period_s', 0.05).value),
             self._loop_period,
@@ -164,7 +215,7 @@ class JaxDriver:
         if self._cpu_temp_enabled:
             self._cpu_temp_pub = node.create_publisher(Temperature, self._cpu_temp_topic, 10)
         self._imu_pub = None
-        if self.use_imu and self.is_physical and self._physical_imu_via_serial:
+        if self.use_imu and self.is_physical and self._physical_imu_via_arduino:
             physical_imu_topic = str(
                 node.declare_parameter('physical_imu_topic', '/imu/data').value
             )
@@ -266,18 +317,39 @@ class JaxDriver:
 
         self.serial_port = None
         if self.is_physical:
-            self.serial_port = serial.Serial('/dev/ttyAMA0', 115200, timeout=0.02)
-            self.node.get_logger().info('Serial connection to Arduino established.')
+            if self._transport == 'serial':
+                if serial is None:
+                    raise RuntimeError(
+                        'pyserial is required for arduino_transport=serial but is not installed'
+                    )
+                self.serial_port = serial.Serial(
+                    self._serial_port_name,
+                    self._serial_baud,
+                    timeout=self._serial_timeout,
+                )
+                self.node.get_logger().info(
+                    f'Serial connection to Arduino established on {self._serial_port_name}.'
+                )
+            elif self._transport == 'i2c':
+                if SMBus is None or i2c_msg is None:
+                    raise RuntimeError(
+                        'smbus2 is required for arduino_transport=i2c but is not installed'
+                    )
+                self._i2c_bus = SMBus(self._i2c_bus_id)
+                self.node.get_logger().info(
+                    f'I2C connection to Arduino established on bus {self._i2c_bus_id} '
+                    f'address 0x{self._i2c_address:02X}.'
+                )
 
-        if self.use_imu and not (self.is_physical and self._physical_imu_via_serial):
+        if self.use_imu and not (self.is_physical and self._physical_imu_via_arduino):
             imu_topic = node.declare_parameter(
                 'sim_imu_topic' if self.is_sim else 'physical_imu_topic',
                 '/jax/imu' if self.is_sim else '/imu/data',
             ).value
             self._imu_sub = node.create_subscription(Imu, imu_topic, self.update_imu, 10)
             self.node.get_logger().info(f'IMU enabled: subscribing to {imu_topic}')
-        elif self.use_imu and self.is_physical and self._physical_imu_via_serial:
-            self.node.get_logger().info('IMU enabled: expecting IMU data from Arduino serial feedback')
+        elif self.use_imu and self.is_physical and self._physical_imu_via_arduino:
+            self.node.get_logger().info('IMU enabled: expecting IMU data from Arduino transport feedback')
 
         self.node.get_logger().info(
             f'TROT speed slider axis={self.trot_speed_slider_axis}, '
@@ -288,7 +360,7 @@ class JaxDriver:
                 f'CPU temp telemetry active on {self._cpu_temp_topic} '
                 f'from {self._cpu_temp_source_path}'
             )
-        self.node.get_logger().info('Jax Arduino mode driver ready')
+        self.node.get_logger().info(f'Jax Arduino mode driver ready (transport={self._transport})')
         self.publish_current_mode()
 
     def _declare_servo_calibration_parameters(self):
@@ -531,24 +603,40 @@ class JaxDriver:
             self.state.behavior_state = BehaviorState.REST
 
     def _request_battery_voltage(self):
-        if not self.serial_port or not self.serial_port.is_open:
+        if not self._transport_ready():
             return
         now = time.monotonic()
         if (now - self._last_battery_query_time) < self._battery_query_period_s:
             return
         self._last_battery_query_time = now
-        self.serial_port.write(b'BAT?\n')
+        if self._transport == 'i2c' and self._i2c_protocol == 'binary_v1':
+            raw_voltage = self._read_i2c_battery_voltage()
+            if raw_voltage is not None:
+                self._publish_battery_voltage(raw_voltage)
+            return
+
+        self._write_transport_line('BAT?')
 
     def _request_imu_sample(self):
-        if not self.serial_port or not self.serial_port.is_open:
+        if not self._transport_ready():
             return
-        if not (self.use_imu and self.is_physical and self._physical_imu_via_serial):
+        if not (self.use_imu and self.is_physical and self._physical_imu_via_arduino):
             return
         now = time.monotonic()
         if (now - self._last_imu_query_time) < self._imu_query_period_s:
             return
         self._last_imu_query_time = now
-        self.serial_port.write(b'IMU?\n')
+
+        if self._transport == 'i2c' and self._i2c_protocol == 'binary_v1':
+            if not self._warned_i2c_imu_unsupported:
+                self.node.get_logger().warn(
+                    'IMU over Arduino I2C binary_v1 is not implemented in the current Arduino sketch. '
+                    'Set physical_imu_via_arduino:=false and use direct IMU topic publishing instead.'
+                )
+                self._warned_i2c_imu_unsupported = True
+            return
+
+        self._write_transport_line('IMU?')
 
     def _publish_battery_voltage(self, raw_voltage: float):
         batt = BatteryState()
@@ -653,31 +741,26 @@ class JaxDriver:
         return True
 
     def _drain_serial_feedback(self):
-        if not self.serial_port or not self.serial_port.is_open:
+        if not self._transport_ready():
             return
+
+        if self._transport == 'i2c':
+            if self._i2c_protocol == 'binary_v1':
+                return
+            # Arduino I2C request/response returns one payload per read.
+            for _ in range(2):
+                payload = self._read_i2c_line()
+                if not payload:
+                    continue
+                for line in payload.splitlines():
+                    self._handle_feedback_line(line.strip())
+            return
+
         try:
             while self.serial_port.in_waiting > 0:
                 line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-                if not line or line in {'OK', 'ERR', 'JAX_SERVO_READY'}:
-                    continue
-                if self._handle_serial_imu(line):
-                    continue
-                raw_voltage = None
-                if line.startswith('VOLT:'):
-                    payload = line.split(':', 1)[1]
-                    try:
-                        raw_voltage = float(payload)
-                    except ValueError:
-                        self.node.get_logger().warn(f'Invalid battery response: {line}')
-                        continue
-                else:
-                    try:
-                        raw_voltage = float(line)
-                    except ValueError:
-                        continue
-
-                self._publish_battery_voltage(raw_voltage)
-        except serial.SerialException as exc:
+                self._handle_feedback_line(line)
+        except Exception as exc:
             self.node.get_logger().warn(f'Serial feedback error: {exc}')
 
     def run(self):
@@ -705,18 +788,111 @@ class JaxDriver:
             time.sleep(self._loop_period)
 
     def send_joint_angles_to_arduino(self, joint_angles):
-        if not self.serial_port or not self.serial_port.is_open:
+        if not self._transport_ready():
             return
 
         deg_angles = self._joint_angles_to_servo_degrees(joint_angles)
         self._send_servo_degrees_to_arduino(deg_angles)
 
     def _send_servo_degrees_to_arduino(self, deg_angles):
-        if not self.serial_port or not self.serial_port.is_open:
+        if not self._transport_ready():
+            return
+
+        if self._transport == 'i2c' and self._i2c_protocol == 'binary_v1':
+            self._write_i2c_servo_angles_binary_v1(deg_angles)
             return
 
         cmd_str = ','.join(f'{a:.2f}' for a in deg_angles) + '\n'
-        self.serial_port.write(cmd_str.encode('utf-8'))
+        self._write_transport_line(cmd_str)
+
+    def _transport_ready(self):
+        if self._transport == 'serial':
+            return self.serial_port is not None and self.serial_port.is_open
+        if self._transport == 'i2c':
+            return self._i2c_bus is not None
+        return False
+
+    def _write_transport_line(self, text: str):
+        if self._transport == 'serial':
+            payload = text if text.endswith('\n') else f'{text}\n'
+            self.serial_port.write(payload.encode('utf-8'))
+            return
+
+        if self._transport == 'i2c':
+            if self._i2c_protocol == 'binary_v1':
+                # binary_v1 path should use typed command helpers.
+                return
+            payload = text if text.endswith('\n') else f'{text}\n'
+            data = payload.encode('ascii', errors='ignore')
+            max_chunk = 28
+            for idx in range(0, len(data), max_chunk):
+                chunk = list(data[idx:idx + max_chunk])
+                self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, chunk))
+            return
+
+    def _write_i2c_servo_angles_binary_v1(self, deg_angles):
+        if self._i2c_bus is None:
+            return
+
+        packed = [1]
+        for angle in deg_angles:
+            packed.append(int(max(0, min(180, round(angle)))))
+
+        self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, packed))
+
+    def _read_i2c_battery_voltage(self):
+        if self._i2c_bus is None:
+            return None
+
+        msg = i2c_msg.read(self._i2c_address, 2)
+        self._i2c_bus.i2c_rdwr(msg)
+        raw = bytes(msg)
+        if len(raw) != 2:
+            return None
+
+        centivolts = int.from_bytes(raw, byteorder='little', signed=False)
+        return centivolts / 100.0
+
+    def _read_i2c_line(self):
+        if self._i2c_bus is None:
+            return ''
+        msg = i2c_msg.read(self._i2c_address, self._i2c_read_len)
+        self._i2c_bus.i2c_rdwr(msg)
+        text = bytes(msg).decode('utf-8', errors='ignore')
+        return text.replace('\x00', '').strip()
+
+    def _handle_feedback_line(self, line: str):
+        if not line or line in {'OK', 'ERR', 'JAX_SERVO_READY'}:
+            return
+        if self._handle_serial_imu(line):
+            return
+
+        raw_voltage = None
+        if line.startswith('VOLT:'):
+            payload = line.split(':', 1)[1]
+            try:
+                raw_voltage = float(payload)
+            except ValueError:
+                self.node.get_logger().warn(f'Invalid battery response: {line}')
+                return
+        else:
+            try:
+                raw_voltage = float(line)
+            except ValueError:
+                return
+
+        self._publish_battery_voltage(raw_voltage)
+
+    def close_transport(self):
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+        self.serial_port = None
+        if self._i2c_bus is not None:
+            try:
+                self._i2c_bus.close()
+            except Exception:
+                pass
+            self._i2c_bus = None
 
     def _joint_angles_to_servo_degrees(self, joint_angles):
         flat_angles = [float(joint_angles[i, j]) for j in range(4) for i in range(3)]
@@ -756,8 +932,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if driver and driver.serial_port and driver.serial_port.is_open:
-            driver.serial_port.close()
+        if driver:
+            driver.close_transport()
         node.destroy_node()
         try:
             rclpy.shutdown()

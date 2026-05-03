@@ -294,8 +294,6 @@ class JaxDisplayNode(Node):
                           CYAN if i < s.wifi_bars else GRAY, -1)
         cv2.putText(img, self.local_ip, (100, 65),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, WHITE, 1)
-        cv2.putText(img, f"CPU {s.cpu_temp_c:.1f}C", (100, 86),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, WHITE, 1)
 
         # LED indicators
         ly = 92

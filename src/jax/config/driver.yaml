@@ -88,9 +88,25 @@
     trot_start_linear_threshold: 0.02
     trot_start_yaw_threshold: 0.05
 
+    # ---------------- Arduino Transport ----------------
+    # Transport between Raspberry Pi and Arduino controller.
+    # Use 'i2c' for the current wiring. Set to 'serial' for legacy UART wiring.
+    arduino_transport: i2c
+
+    # Legacy serial transport settings (used only when arduino_transport=serial).
+    arduino_serial_port: /dev/ttyAMA0
+    arduino_serial_baud: 115200
+    arduino_serial_timeout_s: 0.02
+
+    # I2C transport settings (used only when arduino_transport=i2c).
+    arduino_i2c_bus: 1
+    arduino_i2c_address: 16
+    arduino_i2c_read_len: 2
+    arduino_i2c_protocol: binary_v1
+
     # ---------------- Battery Telemetry ----------------
     # Battery telemetry tuning.
-    # The Arduino only replies to BAT? requests, so the Pi polls it at this rate.
+    # Driver polls at this rate; for I2C binary_v1 each poll reads 2 battery bytes.
     battery_query_period_s: 0.10
 
     # Final battery calibration: published_voltage = raw_voltage * scale + offset
@@ -122,8 +138,11 @@
     sim_imu_topic: /jax/imu
     physical_imu_topic: /imu/data
 
-    # Physical robot IMU is expected over Arduino serial by default.
-    physical_imu_via_serial: true
+    # This Arduino sketch does not provide IMU feedback.
+    physical_imu_via_arduino: false
+
+    # Legacy compatibility flag. Keep in sync with physical_imu_via_arduino.
+    physical_imu_via_serial: false
     imu_query_period_s: 0.05
 
     # ---------------- IMU Stabilization ----------------
