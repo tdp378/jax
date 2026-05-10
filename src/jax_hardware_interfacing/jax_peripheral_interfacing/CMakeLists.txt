@@ -5,6 +5,7 @@ find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
   scripts/bno08x_imu_publisher.py
+  scripts/serial_imu_publisher.py
   scripts/cpu_temp_publisher.py
   scripts/jax_display_node.py
   scripts/jax_wifi_status_publisher.py

@@ -91,27 +91,39 @@
     # ---------------- Arduino Transport ----------------
     # Transport between Raspberry Pi and Arduino controller.
     # Use 'i2c' for the current wiring. Set to 'serial' for legacy UART wiring.
-    arduino_transport: i2c
+    arduino_transport: serial
 
     # Legacy serial transport settings (used only when arduino_transport=serial).
     arduino_serial_port: /dev/ttyAMA0
-    arduino_serial_baud: 115200
+    arduino_serial_baud: 57600
     arduino_serial_timeout_s: 0.02
+    arduino_serial_protocol: binary_v1
 
     # I2C transport settings (used only when arduino_transport=i2c).
     arduino_i2c_bus: 1
     arduino_i2c_address: 16
     arduino_i2c_read_len: 2
     arduino_i2c_protocol: binary_v1
+    arduino_i2c_use_rdwr: false
+    arduino_i2c_reconnect_cooldown_s: 1.0
+    arduino_i2c_servo_write_hz: 18.0
+    arduino_i2c_servo_min_delta_deg: 0.2
+    arduino_i2c_write_retries: 2
+    arduino_i2c_read_retries: 2
+
+    # Reduce command traffic on unstable I2C links.
+    control_rate_hz: 60.0
 
     # ---------------- Battery Telemetry ----------------
     # Battery telemetry tuning.
     # Driver polls at this rate; for I2C binary_v1 each poll reads 2 battery bytes.
-    battery_query_period_s: 0.10
+    battery_query_period_s: 0.40
+    # Disable battery polling while trotting to prioritize servo command bandwidth.
+    battery_poll_in_trot: false
 
     # Final battery calibration: published_voltage = raw_voltage * scale + offset
-    battery_voltage_scale: 0.78
-    battery_voltage_offset: -1.0
+    battery_voltage_scale: 0.908
+    battery_voltage_offset: 0.0
 
     # Display battery mapping and low-battery warning thresholds.
     battery_voltage_full: 16.8
@@ -138,17 +150,23 @@
     sim_imu_topic: /jax/imu
     physical_imu_topic: /imu/data
 
-    # This Arduino sketch does not provide IMU feedback.
+    # IMU is now connected directly to the Pi (external serial node), not via Arduino.
     physical_imu_via_arduino: false
 
     # Legacy compatibility flag. Keep in sync with physical_imu_via_arduino.
     physical_imu_via_serial: false
     imu_query_period_s: 0.05
 
+    # External serial IMU settings (used by serial_imu_publisher when
+    # use_external_serial_imu:=1).
+    serial_port: /dev/ttyAMA3
+    baud_rate: 115200
+    imu_topic: /imu/data
+
     # ---------------- IMU Stabilization ----------------
     # Disable closed-loop body stabilization until the physical IMU frame/signs
     # are aligned to the robot body; the IMU topic still publishes normally.
-    imu_stabilization_enabled: false
+    imu_stabilization_enabled: true
     imu_orientation_variance: 0.02
     imu_angular_velocity_variance: 0.03
     imu_linear_acceleration_variance: 0.2

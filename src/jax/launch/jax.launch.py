@@ -22,6 +22,9 @@ def generate_launch_description():
     camera_height = LaunchConfiguration('camera_height')
     camera_stream_port = LaunchConfiguration('camera_stream_port')
     use_direct_i2c_imu = LaunchConfiguration('use_direct_i2c_imu')
+    use_external_serial_imu = LaunchConfiguration('use_external_serial_imu')
+    rosbridge_enabled = LaunchConfiguration('rosbridge_enabled')
+    rosbridge_port = LaunchConfiguration('rosbridge_port')
     rosbridge_log_level = LaunchConfiguration('rosbridge_log_level')
     rosapi_log_level = LaunchConfiguration('rosapi_log_level')
     camera_container_log_level = LaunchConfiguration('camera_container_log_level')
@@ -45,7 +48,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('is_sim', default_value='0'),
         DeclareLaunchArgument('is_physical', default_value='1'),
-        DeclareLaunchArgument('use_imu', default_value='0'),
+        DeclareLaunchArgument('use_imu', default_value='1'),
         DeclareLaunchArgument('use_camera', default_value='1'),
         DeclareLaunchArgument('camera_params_file', default_value=camera_params_default),
         DeclareLaunchArgument('camera', default_value=''),
@@ -54,6 +57,9 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_height', default_value=''),
         DeclareLaunchArgument('camera_stream_port', default_value='8080'),
         DeclareLaunchArgument('use_direct_i2c_imu', default_value='0'),
+        DeclareLaunchArgument('use_external_serial_imu', default_value='1'),
+        DeclareLaunchArgument('rosbridge_enabled', default_value='1'),
+        DeclareLaunchArgument('rosbridge_port', default_value='9090'),
         DeclareLaunchArgument('rosbridge_log_level', default_value='warn'),
         DeclareLaunchArgument('rosapi_log_level', default_value='warn'),
         DeclareLaunchArgument('camera_container_log_level', default_value='warn'),
@@ -85,6 +91,18 @@ def generate_launch_description():
             parameters=[driver_params],
         ),
         Node(
+            package='jax_peripheral_interfacing',
+            executable='serial_imu_publisher.py',
+            name='serial_imu',
+            output='screen',
+            condition=IfCondition(PythonExpression([
+                "'", is_physical, "' == '1' and '", use_imu,
+                "' == '1' and '", use_direct_i2c_imu, "' == '0' and '",
+                use_external_serial_imu, "' == '1'",
+            ])),
+            parameters=[driver_params],
+        ),
+        Node(
             package='jax',
             executable='jax_driver.py',
             name='jax_driver',
@@ -97,9 +115,10 @@ def generate_launch_description():
             executable='rosbridge_websocket',
             name='rosbridge_websocket',
             output='screen',
+            condition=IfCondition(rosbridge_enabled),
             arguments=['--ros-args', '--log-level', rosbridge_log_level],
             parameters=[{
-                'port': 9090,
+                'port': rosbridge_port,
                 'address': '0.0.0.0',
             }],
         ),

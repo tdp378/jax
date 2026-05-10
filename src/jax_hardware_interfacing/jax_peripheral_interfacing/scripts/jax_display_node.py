@@ -171,16 +171,24 @@ class JaxDisplayNode(Node):
         has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         use_lcd = self.get_parameter("use_lcd").value
 
+        self.backend = None
         if (use_lcd or on_pi) and _HAS_LUMA:
-            self.backend = WaveshareDisplayBackend(
-                spi_port=self.get_parameter("spi_port").value,
-                spi_device=self.get_parameter("spi_device").value,
-                dc_pin=self.get_parameter("dc_pin").value,
-                rst_pin=self.get_parameter("rst_pin").value,
-            )
-        elif has_display:
+            try:
+                self.backend = WaveshareDisplayBackend(
+                    spi_port=self.get_parameter("spi_port").value,
+                    spi_device=self.get_parameter("spi_device").value,
+                    dc_pin=self.get_parameter("dc_pin").value,
+                    rst_pin=self.get_parameter("rst_pin").value,
+                )
+                self.get_logger().info("Using Waveshare LCD backend")
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"LCD backend init failed ({exc}); falling back to non-LCD backend"
+                )
+
+        if self.backend is None and has_display:
             self.backend = DesktopDisplayBackend()
-        else:
+        elif self.backend is None:
             self.get_logger().info("No display server detected; using headless display backend")
             self.backend = HeadlessDisplayBackend()
 

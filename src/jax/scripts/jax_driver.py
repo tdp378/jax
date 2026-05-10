@@ -49,7 +49,10 @@ def parse_driver_args(argv):
 class JaxDriver:
     def __init__(self, is_sim, is_physical, use_imu, node: Node):
         self.node = node
-        self.message_rate = 50
+        self.message_rate = max(
+            float(node.declare_parameter('control_rate_hz', 50.0).value),
+            5.0,
+        )
         self._loop_period = 1.0 / self.message_rate
 
         self.is_sim = is_sim
@@ -66,6 +69,13 @@ class JaxDriver:
         self._i2c_protocol = 'binary_v1'
         self._warned_i2c_imu_unsupported = False
         self._last_i2c_error_log_time = 0.0
+        self._last_i2c_reopen_attempt_time = 0.0
+        self._i2c_reconnect_cooldown_s = 1.0
+        self._i2c_consecutive_error_count = 0
+        self._i2c_servo_write_hz = 12.0
+        self._i2c_servo_min_delta_deg = 1.0
+        self._last_i2c_servo_send_time = 0.0
+        self._last_i2c_servo_angles = None
 
         self._servo_direction_defaults = [
             1, -1, -1,
@@ -104,6 +114,9 @@ class JaxDriver:
         ).value
         self._battery_query_period_s = float(
             node.declare_parameter('battery_query_period_s', 0.10).value
+        )
+        self._battery_poll_in_trot = bool(
+            node.declare_parameter('battery_poll_in_trot', False).value
         )
         self._cmd_vel_timeout_s = max(
             float(node.declare_parameter('cmd_vel_timeout_s', self.config.cmd_vel_timeout_s).value),
@@ -180,6 +193,16 @@ class JaxDriver:
         self._serial_timeout = float(
             node.declare_parameter('arduino_serial_timeout_s', 0.02).value
         )
+        self._serial_protocol = str(
+            node.declare_parameter('arduino_serial_protocol', 'csv').value
+        ).strip().lower()
+        if self._serial_protocol not in {'csv', 'binary_v1'}:
+            self.node.get_logger().warn(
+                f"Unsupported arduino_serial_protocol '{self._serial_protocol}', defaulting to csv"
+            )
+            self._serial_protocol = 'csv'
+        self._serial_feedback_buffer = ''
+        self._serial_imu_binary_buffer = bytearray()
 
         self._i2c_bus_id = int(
             node.declare_parameter('arduino_i2c_bus', 1).value
@@ -196,6 +219,26 @@ class JaxDriver:
         ).strip().lower()
         self._i2c_use_rdwr = bool(
             node.declare_parameter('arduino_i2c_use_rdwr', False).value
+        )
+        self._i2c_reconnect_cooldown_s = max(
+            float(node.declare_parameter('arduino_i2c_reconnect_cooldown_s', 1.0).value),
+            0.25,
+        )
+        self._i2c_servo_write_hz = max(
+            float(node.declare_parameter('arduino_i2c_servo_write_hz', 12.0).value),
+            1.0,
+        )
+        self._i2c_servo_min_delta_deg = max(
+            float(node.declare_parameter('arduino_i2c_servo_min_delta_deg', 1.0).value),
+            0.0,
+        )
+        self._i2c_write_retries = max(
+            int(node.declare_parameter('arduino_i2c_write_retries', 1).value),
+            1,
+        )
+        self._i2c_read_retries = max(
+            int(node.declare_parameter('arduino_i2c_read_retries', 1).value),
+            1,
         )
 
         self._imu_query_period_s = max(
@@ -617,6 +660,8 @@ class JaxDriver:
     def _request_battery_voltage(self):
         if not self._transport_ready():
             return
+        if (not self._battery_poll_in_trot) and self.latest_mode == RobotMode.TROT:
+            return
         now = time.monotonic()
         if (now - self._last_battery_query_time) < self._battery_query_period_s:
             return
@@ -625,6 +670,10 @@ class JaxDriver:
             raw_voltage = self._read_i2c_battery_voltage()
             if raw_voltage is not None:
                 self._publish_battery_voltage(raw_voltage)
+            return
+
+        if self._transport == 'serial' and self._serial_protocol == 'binary_v1':
+            # Binary serial firmware streams battery telemetry periodically.
             return
 
         self._write_transport_line('BAT?')
@@ -646,6 +695,10 @@ class JaxDriver:
                     'Set physical_imu_via_arduino:=false and use direct IMU topic publishing instead.'
                 )
                 self._warned_i2c_imu_unsupported = True
+            return
+
+        if self._transport == 'serial' and self._serial_protocol == 'binary_v1':
+            # Binary serial firmware should stream IMU telemetry unsolicited.
             return
 
         self._write_transport_line('IMU?')
@@ -752,6 +805,83 @@ class JaxDriver:
             self._imu_pub.publish(msg)
         return True
 
+    @staticmethod
+    def _decode_bno085_rvc_angle(lsb: int, msb: int) -> float:
+        value = (int(msb) << 8) | int(lsb)
+        if value > 32767:
+            value -= 65536
+        return float(value) / 100.0
+
+    @staticmethod
+    def _euler_deg_to_quaternion(yaw_deg: float, pitch_deg: float, roll_deg: float):
+        yaw = math.radians(yaw_deg)
+        pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
+
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+
+        qw = cr * cp * cy + sr * sp * sy
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        return qx, qy, qz, qw
+
+    def _publish_bno085_rvc_payload(self, payload: bytes):
+        # UART-RVC payload format uses int16 angles in centi-degrees.
+        yaw_deg = self._decode_bno085_rvc_angle(payload[1], payload[2])
+        roll_deg = self._decode_bno085_rvc_angle(payload[3], payload[4])
+        pitch_deg = self._decode_bno085_rvc_angle(payload[5], payload[6])
+
+        if yaw_deg < 0.0:
+            yaw_deg += 360.0
+
+        qx, qy, qz, qw = self._euler_deg_to_quaternion(yaw_deg, pitch_deg, roll_deg)
+        msg = Imu()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._imu_frame_id
+        msg.orientation.x = qx
+        msg.orientation.y = qy
+        msg.orientation.z = qz
+        msg.orientation.w = qw
+        msg.orientation_covariance = self._covariance(
+            self._imu_orientation_variance * self._imu_orientation_variance
+        )
+
+        # RVC framing in this path provides only orientation.
+        msg.angular_velocity_covariance[0] = -1.0
+        msg.linear_acceleration_covariance[0] = -1.0
+
+        self.update_imu(msg)
+        if self._imu_pub is not None:
+            self._imu_pub.publish(msg)
+
+    def _drain_serial_binary_imu(self, chunk: bytes):
+        if not (self.use_imu and self.is_physical and self._physical_imu_via_arduino):
+            return
+
+        self._serial_imu_binary_buffer.extend(chunk)
+        if len(self._serial_imu_binary_buffer) > 8192:
+            self._serial_imu_binary_buffer = self._serial_imu_binary_buffer[-8192:]
+
+        packet_len = 19  # 0xAA 0xAA + 17-byte payload
+        idx = 0
+        data = self._serial_imu_binary_buffer
+        while idx + packet_len <= len(data):
+            if data[idx] == 0xAA and data[idx + 1] == 0xAA:
+                payload = bytes(data[idx + 2: idx + packet_len])
+                self._publish_bno085_rvc_payload(payload)
+                idx += packet_len
+                continue
+            idx += 1
+
+        if idx > 0:
+            del data[:idx]
+
     def _drain_serial_feedback(self):
         if not self._transport_ready():
             return
@@ -769,9 +899,34 @@ class JaxDriver:
             return
 
         try:
-            while self.serial_port.in_waiting > 0:
-                line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-                self._handle_feedback_line(line)
+            available = self.serial_port.in_waiting
+            if available <= 0:
+                return
+
+            chunk = self.serial_port.read(available)
+            if not chunk:
+                return
+
+            self._drain_serial_binary_imu(chunk)
+
+            # Binary IMU passthrough can inject non-text bytes; keep only printable
+            # text/newlines so telemetry lines can be parsed without stalling.
+            text = ''.join(
+                chr(byte)
+                for byte in chunk
+                if byte in (9, 10, 13) or (32 <= byte <= 126)
+            )
+            if not text:
+                return
+
+            self._serial_feedback_buffer += text
+            if len(self._serial_feedback_buffer) > 4096:
+                self._serial_feedback_buffer = self._serial_feedback_buffer[-4096:]
+
+            parts = self._serial_feedback_buffer.split('\n')
+            self._serial_feedback_buffer = parts.pop() if parts else ''
+            for part in parts:
+                self._handle_feedback_line(part.strip())
         except Exception as exc:
             self.node.get_logger().warn(f'Serial feedback error: {exc}')
 
@@ -804,7 +959,25 @@ class JaxDriver:
             return
 
         deg_angles = self._joint_angles_to_servo_degrees(joint_angles)
+
+        if self._transport == 'i2c':
+            now = time.monotonic()
+            min_period = 1.0 / self._i2c_servo_write_hz
+            if (now - self._last_i2c_servo_send_time) < min_period:
+                return
+
+            if self._last_i2c_servo_angles is not None:
+                delta = max(
+                    abs(current - previous)
+                    for current, previous in zip(deg_angles, self._last_i2c_servo_angles)
+                )
+                if delta < self._i2c_servo_min_delta_deg:
+                    return
+
         self._send_servo_degrees_to_arduino(deg_angles)
+        if self._transport == 'i2c':
+            self._last_i2c_servo_send_time = time.monotonic()
+            self._last_i2c_servo_angles = list(deg_angles)
 
     def _send_servo_degrees_to_arduino(self, deg_angles):
         if not self._transport_ready():
@@ -812,6 +985,11 @@ class JaxDriver:
 
         if self._transport == 'i2c' and self._i2c_protocol == 'binary_v1':
             self._write_i2c_servo_angles_binary_v1(deg_angles)
+            return
+
+        if self._transport == 'serial' and self._serial_protocol == 'binary_v1':
+            payload = bytes([1] + [int(max(0, min(180, round(a)))) for a in deg_angles])
+            self.serial_port.write(payload)
             return
 
         cmd_str = ','.join(f'{a:.2f}' for a in deg_angles) + '\n'
@@ -823,6 +1001,45 @@ class JaxDriver:
         if self._transport == 'i2c':
             return self._i2c_bus is not None
         return False
+
+    def _handle_i2c_bus_error(self, context: str, exc: Exception):
+        now = time.monotonic()
+        if (now - self._last_i2c_error_log_time) >= 1.0:
+            self.node.get_logger().warn(f'I2C {context} failed: {exc}')
+            self._last_i2c_error_log_time = now
+
+        self._i2c_consecutive_error_count += 1
+        if self._i2c_consecutive_error_count < 3:
+            return
+
+        if (now - self._last_i2c_reopen_attempt_time) < self._i2c_reconnect_cooldown_s:
+            return
+
+        self._last_i2c_reopen_attempt_time = now
+        try:
+            if self._i2c_bus is not None:
+                self._i2c_bus.close()
+        except Exception:
+            pass
+
+        self._i2c_bus = None
+        try:
+            if SMBus is not None:
+                self._i2c_bus = SMBus(self._i2c_bus_id)
+            elif smbus is not None:
+                self._i2c_bus = smbus.SMBus(self._i2c_bus_id)
+
+            if self._i2c_bus is not None:
+                self._i2c_consecutive_error_count = 0
+                self.node.get_logger().warn(
+                    f'I2C bus recovered on bus {self._i2c_bus_id} '
+                    f'address 0x{self._i2c_address:02X}'
+                )
+        except Exception as reopen_exc:
+            self._i2c_bus = None
+            if (now - self._last_i2c_error_log_time) >= 1.0:
+                self.node.get_logger().warn(f'I2C reopen failed: {reopen_exc}')
+                self._last_i2c_error_log_time = now
 
     def _write_transport_line(self, text: str):
         if self._transport == 'serial':
@@ -845,59 +1062,53 @@ class JaxDriver:
         if self._i2c_bus is None or not data:
             return
 
-        def _log_i2c_error_once_per_sec(message: str):
-            now = time.monotonic()
-            if (now - self._last_i2c_error_log_time) >= 1.0:
-                self.node.get_logger().warn(message)
-                self._last_i2c_error_log_time = now
+        for _ in range(self._i2c_write_retries):
+            if self._i2c_use_rdwr and i2c_msg is not None:
+                try:
+                    self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, list(data)))
+                    self._i2c_consecutive_error_count = 0
+                    return
+                except OSError as exc:
+                    self._handle_i2c_bus_error('i2c_rdwr write (falling back to SMBus block)', exc)
 
-        if self._i2c_use_rdwr and i2c_msg is not None:
             try:
-                self._i2c_bus.i2c_rdwr(i2c_msg.write(self._i2c_address, list(data)))
+                if len(data) == 1:
+                    self._i2c_bus.write_byte(self._i2c_address, int(data[0]))
+                    self._i2c_consecutive_error_count = 0
+                    return
+
+                self._i2c_bus.write_i2c_block_data(
+                    self._i2c_address,
+                    int(data[0]),
+                    [int(b) for b in data[1:]],
+                )
+                self._i2c_consecutive_error_count = 0
                 return
             except OSError as exc:
-                _log_i2c_error_once_per_sec(
-                    f'I2C i2c_rdwr write failed (will fallback to SMBus block): {exc}'
-                )
-
-        try:
-            if len(data) == 1:
-                self._i2c_bus.write_byte(self._i2c_address, int(data[0]))
-                return
-
-            self._i2c_bus.write_i2c_block_data(
-                self._i2c_address,
-                int(data[0]),
-                [int(b) for b in data[1:]],
-            )
-        except OSError as exc:
-            _log_i2c_error_once_per_sec(f'I2C SMBus write failed: {exc}')
+                self._handle_i2c_bus_error('SMBus write', exc)
 
     def _i2c_read_bytes(self, count: int):
         if self._i2c_bus is None or count <= 0:
             return b''
 
-        if self._i2c_use_rdwr and i2c_msg is not None:
-            try:
-                msg = i2c_msg.read(self._i2c_address, count)
-                self._i2c_bus.i2c_rdwr(msg)
-                return bytes(msg)
-            except OSError as exc:
-                now = time.monotonic()
-                if (now - self._last_i2c_error_log_time) >= 1.0:
-                    self.node.get_logger().warn(
-                        f'I2C i2c_rdwr read failed (will fallback to byte reads): {exc}'
-                    )
-                    self._last_i2c_error_log_time = now
+        for _ in range(self._i2c_read_retries):
+            if self._i2c_use_rdwr and i2c_msg is not None:
+                try:
+                    msg = i2c_msg.read(self._i2c_address, count)
+                    self._i2c_bus.i2c_rdwr(msg)
+                    self._i2c_consecutive_error_count = 0
+                    return bytes(msg)
+                except OSError as exc:
+                    self._handle_i2c_bus_error('i2c_rdwr read (falling back to byte reads)', exc)
 
-        try:
-            return bytes(self._i2c_bus.read_byte(self._i2c_address) for _ in range(count))
-        except OSError as exc:
-            now = time.monotonic()
-            if (now - self._last_i2c_error_log_time) >= 1.0:
-                self.node.get_logger().warn(f'I2C byte read failed: {exc}')
-                self._last_i2c_error_log_time = now
-            return b''
+            try:
+                data = bytes(self._i2c_bus.read_byte(self._i2c_address) for _ in range(count))
+                self._i2c_consecutive_error_count = 0
+                return data
+            except OSError as exc:
+                self._handle_i2c_bus_error('byte read', exc)
+
+        return b''
 
     def _write_i2c_servo_angles_binary_v1(self, deg_angles):
         if self._i2c_bus is None:
@@ -913,12 +1124,18 @@ class JaxDriver:
         if self._i2c_bus is None:
             return None
 
-        raw = self._i2c_read_bytes(2)
-        if len(raw) != 2:
-            return None
+        # read_word_data sends [addr+W, reg=0xFF, REPEATED_START, addr+R] in a single
+        # I2C transaction, triggering onRequest() exactly once on the Arduino.
+        # The return value is a 16-bit little-endian integer (centivolts).
+        for _ in range(self._i2c_read_retries):
+            try:
+                centivolts = self._i2c_bus.read_word_data(self._i2c_address, 0xFF)
+                self._i2c_consecutive_error_count = 0
+                return centivolts / 100.0
+            except Exception as exc:
+                self._handle_i2c_bus_error('battery read', exc)
 
-        centivolts = int.from_bytes(raw, byteorder='little', signed=False)
-        return centivolts / 100.0
+        return None
 
     def _read_i2c_line(self):
         if self._i2c_bus is None:
@@ -936,6 +1153,12 @@ class JaxDriver:
         raw_voltage = None
         if line.startswith('VOLT:'):
             payload = line.split(':', 1)[1]
+        elif line.startswith('B:') or line.startswith('BAT:'):
+            payload = line.split(':', 1)[1]
+        else:
+            payload = None
+
+        if payload is not None:
             try:
                 raw_voltage = float(payload)
             except ValueError:
